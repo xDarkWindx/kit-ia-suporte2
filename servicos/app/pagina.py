@@ -27,6 +27,7 @@ app = FastAPI(title="Página do kit")
 STATIC = Path(__file__).parent / "static"
 SOBRECARGA_VALE = 600  # depois de 10 minutos, um erro de sobrecarga já não diz nada
 PROVEDORES = {"groq": "Groq", "gemini": "Gemini"}  # sempre aparecem no painel, mesmo fora de uso
+porta = {"em": 0.0, "publica": None}  # última verificação da porta 3000 pelo endereço público
 contas = {"em": 0.0, "provedores": {}, "bloqueio": {"verificado": False, "em": None}, "token": ""}  # última verificação de Dify e Chatwoot
 
 
@@ -45,6 +46,31 @@ def inicio():
                .replace("{{SENHA}}", cw.get("senha", "Suporte@2026")) \
                .replace("{{PUB_DIFY}}", os.environ.get("PUB_DIFY", "http://localhost:8081")) \
                .replace("{{PUB_CHATWOOT}}", os.environ.get("PUB_CHATWOOT", "http://localhost:3000"))
+
+
+async def porta_do_chat_publica() -> bool | None:
+    """Testa o Chatwoot pelo endereço público, como o navegador do aluno faria (no Codespaces, porta 3000).
+
+    True: responde sem login. False: o Codespaces pede login (porta privada). None: não deu para saber
+    (fora do Codespaces, sem internet ou resposta inesperada). Repete no máximo a cada 20 s.
+    """
+    pub = os.environ.get("PUB_CHATWOOT", "")
+    if not pub.startswith("https://"):
+        return None  # computador da professora/aluno: localhost não tem porta privada
+    if time.time() - porta["em"] < 20:
+        return porta["publica"]
+    publica = None
+    try:
+        async with httpx.AsyncClient(timeout=6, follow_redirects=False) as h:
+            r = await h.get(pub + "/api")
+        if r.status_code in (301, 302, 303, 307, 308, 401, 403):
+            publica = False
+        elif r.status_code == 200 and "version" in r.text:
+            publica = True
+    except httpx.HTTPError:
+        pass
+    porta.update(em=time.time(), publica=publica)
+    return publica
 
 
 @app.get("/api/status")
@@ -67,6 +93,7 @@ async def status():
         "kit_atualizado": ler("atualizacao.json").get("situacao", "ok") == "ok",
         # o painel liga o balão do chat assim que o Chatwoot fica pronto, sem precisar recarregar
         "website_token": ler("chatwoot.json").get("website_token", ""),
+        "porta_chat_publica": await porta_do_chat_publica(),
     }
 
 

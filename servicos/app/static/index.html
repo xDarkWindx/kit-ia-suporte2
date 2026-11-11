@@ -141,7 +141,10 @@
      aqui ele é carregado pelo painel para tentar de novo enquanto o Chatwoot ainda está ligando. -->
 <script>
 const CHAT_URL = "{{PUB_CHATWOOT}}";
-const chat = {ok: false, pronto: false, carregando: false, ultima: 0};
+// fase: esperando › carregando (baixa o script) › abrindo (o balão é um iframe da porta 3000) › pronto
+// Só fica "pronto" quando o Chatwoot avisa que o iframe abriu E o botão do balão existe na página.
+const chat = {fase: "esperando", ultima: 0, espera: 0, publica: null};
+const ESPERA_BALAO = 20000;
 function avisoChat(cls, txt) {
   const m = document.getElementById("mchat");
   m.textContent = txt; m.style.color = cls ? `var(--${cls})` : "";
@@ -151,41 +154,78 @@ function chatEmOutraAba(token, mostrar) {
   document.getElementById("chat-aba-link").href = CHAT_URL + "/widget?website_token=" + encodeURIComponent(token);
   document.getElementById("chat-aba").hidden = !mostrar;
 }
-function carregarChat(token) {
-  // tenta no máximo a cada 15 s; o status chama a cada 5 s
-  if (chat.ok || chat.carregando || Date.now() - chat.ultima < 15000) return;
-  chat.carregando = true; chat.ultima = Date.now();
-  const falhou = () => {
-    chat.carregando = false;
-    avisoChat("bad", "O balão do chat não carregou. Se o Chatwoot está OK acima, a porta 3000 precisa estar " +
-      "pública: aba PORTAS › botão direito na linha \"3. Chatwoot\" › Visibilidade da porta › Public. " +
-      "O painel tenta de novo sozinho. Enquanto isso, use o botão abaixo.");
-    chatEmOutraAba(token, true);
+function limparBalao() {  // tira o que sobrou de uma tentativa que não abriu, para o SDK aceitar rodar de novo
+  document.querySelectorAll("#cw-widget-holder, .woot--bubble-holder").forEach(e => e.remove());
+  delete window.$chatwoot;
+}
+const balaoNaTela = () => !!(window.$chatwoot && window.$chatwoot.hasLoaded && document.querySelector(".woot-widget-bubble"));
+
+function falhou(token, motivo) {
+  limparBalao();
+  chat.fase = "esperando"; chat.ultima = Date.now(); chat.espera = 30000;
+  const passo = " O painel tenta de novo sozinho. Enquanto isso, converse pelo botão abaixo: é o mesmo chat.";
+  if (motivo === "script" || chat.publica === false)
+    avisoChat("bad", "O balão do chat não carregou: a porta 3000 não está pública. Aba PORTAS › botão direito na linha " +
+      "\"3. Chatwoot\" › Visibilidade da porta › Public (só aceitar o aviso do endereço não basta)." + passo);
+  else if (chat.publica === true)
+    avisoChat("warn", "A porta 3000 está pública, mas o navegador não deixou o balão abrir dentro do painel " +
+      "(aviso do Codespaces ou bloqueio de cookies de terceiros). Abra o Chatwoot uma vez pelo botão da seção 2, " +
+      "aceite o aviso e recarregue esta página." + passo);
+  else
+    avisoChat("warn", "O balão do chat não abriu. Confira se a porta 3000 está Public na aba PORTAS e recarregue a página." + passo);
+  chatEmOutraAba(token, true);
+}
+
+function abrirBalao(token) {
+  chat.fase = "abrindo";
+  avisoChat("warn", "Abrindo o balão do chat...");
+  limparBalao();
+  const inicio = Date.now();
+  const conferir = () => {
+    if (chat.fase !== "abrindo") return;
+    if (balaoNaTela()) {
+      chat.fase = "pronto"; chatEmOutraAba(token, false);
+      return avisoChat("ok", "Balão do chat pronto: clique nele, no canto inferior direito.");
+    }
+    if (Date.now() - inicio > ESPERA_BALAO) return falhou(token, "balao");
+    setTimeout(conferir, 500);
   };
+  window.chatwootSDK.run({websiteToken: token, baseUrl: CHAT_URL});
+  conferir();
+}
+
+function carregarChat(token) {
+  if (chat.fase !== "esperando" || Date.now() - chat.ultima < chat.espera) return;
+  chat.ultima = Date.now(); chat.espera = 15000;
+  if (window.chatwootSDK) return abrirBalao(token);  // o script já veio numa tentativa anterior
+  chat.fase = "carregando";
   const g = document.createElement("script");
   g.src = CHAT_URL + "/packs/js/sdk.js?t=" + Date.now(); g.async = true;
-  g.onerror = () => { g.remove(); falhou(); };
+  g.onerror = () => { g.remove(); falhou(token, "script"); };
   g.onload = () => {
     g.remove();
     // porta privada: o Codespaces devolve a página de login no lugar do script e o SDK não existe
-    if (!window.chatwootSDK) return falhou();
-    chat.ok = true; chat.carregando = false;
-    avisoChat("warn", "Abrindo o balão do chat...");
-    // O script veio, mas o balão é uma janela (iframe) da porta 3000 que só aparece quando ela termina de abrir.
-    // No Codespaces ela pode cair no aviso/login do GitHub, que não abre dentro de outra página.
-    window.addEventListener("chatwoot:ready", () => {
-      chat.pronto = true; chatEmOutraAba(token, false);
-      avisoChat("ok", "Balão do chat pronto: clique nele, no canto inferior direito.");
-    }, {once: true});
-    setTimeout(() => {
-      if (chat.pronto) return;
-      avisoChat("warn", "O balão não abriu dentro do painel. Confira se a porta 3000 está Public na aba PORTAS " +
-        "(só aceitar o aviso do endereço não basta) e recarregue a página. Ou converse pelo botão abaixo: é o mesmo chat.");
-      chatEmOutraAba(token, true);
-    }, 20000);
-    window.chatwootSDK.run({websiteToken: token, baseUrl: CHAT_URL});
+    window.chatwootSDK ? abrirBalao(token) : falhou(token, "script");
   };
   document.body.appendChild(g);
+}
+
+function situacaoDoChat(s) {  // chamada a cada 5 s com o /api/status
+  chat.publica = s.porta_chat_publica;
+  if (chat.fase === "pronto") return;
+  if (!(s.chatwoot && s.website_token)) {
+    if (chat.fase === "esperando") avisoChat("warn", "O balão do chat aparece quando o Chatwoot e o Chat on-line ficarem OK acima.");
+    return;
+  }
+  if (chat.publica === false && chat.fase === "esperando") {
+    // o servidor confirmou pelo endereço público: o Codespaces pede login na porta 3000
+    avisoChat("bad", "A porta 3000 (Chatwoot) está privada, por isso o balão não aparece. Aba PORTAS › botão direito " +
+      "na linha \"3. Chatwoot\" › Visibilidade da porta › Public. O balão aparece sozinho em seguida. " +
+      "Enquanto isso, converse pelo botão abaixo.");
+    chatEmOutraAba(s.website_token, true);
+    return;
+  }
+  carregarChat(s.website_token);
 }
 </script>
 
@@ -199,8 +239,7 @@ async function atualizar() {
       const txt = ok ? "OK" : (k === "dify_configurado" ? "falta" : (k === "kit_atualizado" ? "ver aviso" : "aguardando"));
       return `<div class="item"><span>${nomes[k]}</span><span class="pill ${cls}">${txt}</span></div>`;
     }).join("");
-    if (s.chatwoot && s.website_token) carregarChat(s.website_token);
-    else if (!chat.ok) avisoChat("warn", "O balão do chat aparece quando o Chatwoot e o Chat on-line ficarem OK acima.");
+    situacaoDoChat(s);
   } catch (e) { document.getElementById("status").textContent = "Não consegui verificar. O kit está ligado?"; }
 }
 atualizar(); setInterval(atualizar, 5000);
