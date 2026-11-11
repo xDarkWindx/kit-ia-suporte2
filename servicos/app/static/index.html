@@ -98,6 +98,7 @@
     <li>"ATENDENTE" (a conversa aparece como Aberta no Chatwoot)</li>
   </ol>
   <div class="msg" id="mchat" role="status">Carregando o balão do chat...</div>
+  <p id="chat-aba" hidden><a class="botao" id="chat-aba-link" target="_blank" rel="noopener">Abrir o chat em outra aba</a></p>
 </section>
 
 <section>
@@ -140,10 +141,15 @@
      aqui ele é carregado pelo painel para tentar de novo enquanto o Chatwoot ainda está ligando. -->
 <script>
 const CHAT_URL = "{{PUB_CHATWOOT}}";
-const chat = {ok: false, carregando: false, ultima: 0};
+const chat = {ok: false, pronto: false, carregando: false, ultima: 0};
 function avisoChat(cls, txt) {
   const m = document.getElementById("mchat");
   m.textContent = txt; m.style.color = cls ? `var(--${cls})` : "";
+}
+// Plano B: a página do chat aberta direto numa aba, sem depender do balão dentro do painel
+function chatEmOutraAba(token, mostrar) {
+  document.getElementById("chat-aba-link").href = CHAT_URL + "/widget?website_token=" + encodeURIComponent(token);
+  document.getElementById("chat-aba").hidden = !mostrar;
 }
 function carregarChat(token) {
   // tenta no máximo a cada 15 s; o status chama a cada 5 s
@@ -153,7 +159,8 @@ function carregarChat(token) {
     chat.carregando = false;
     avisoChat("bad", "O balão do chat não carregou. Se o Chatwoot está OK acima, a porta 3000 precisa estar " +
       "pública: aba PORTAS › botão direito na linha \"3. Chatwoot\" › Visibilidade da porta › Public. " +
-      "O painel tenta de novo sozinho.");
+      "O painel tenta de novo sozinho. Enquanto isso, use o botão abaixo.");
+    chatEmOutraAba(token, true);
   };
   const g = document.createElement("script");
   g.src = CHAT_URL + "/packs/js/sdk.js?t=" + Date.now(); g.async = true;
@@ -162,9 +169,21 @@ function carregarChat(token) {
     g.remove();
     // porta privada: o Codespaces devolve a página de login no lugar do script e o SDK não existe
     if (!window.chatwootSDK) return falhou();
-    window.chatwootSDK.run({websiteToken: token, baseUrl: CHAT_URL});
     chat.ok = true; chat.carregando = false;
-    avisoChat("ok", "Balão do chat carregado: clique nele, no canto inferior direito.");
+    avisoChat("warn", "Abrindo o balão do chat...");
+    // O script veio, mas o balão é uma janela (iframe) da porta 3000 que só aparece quando ela termina de abrir.
+    // No Codespaces ela pode cair no aviso/login do GitHub, que não abre dentro de outra página.
+    window.addEventListener("chatwoot:ready", () => {
+      chat.pronto = true; chatEmOutraAba(token, false);
+      avisoChat("ok", "Balão do chat pronto: clique nele, no canto inferior direito.");
+    }, {once: true});
+    setTimeout(() => {
+      if (chat.pronto) return;
+      avisoChat("warn", "O balão não abriu dentro do painel. Confira se a porta 3000 está Public na aba PORTAS " +
+        "(só aceitar o aviso do endereço não basta) e recarregue a página. Ou converse pelo botão abaixo: é o mesmo chat.");
+      chatEmOutraAba(token, true);
+    }, 20000);
+    window.chatwootSDK.run({websiteToken: token, baseUrl: CHAT_URL});
   };
   document.body.appendChild(g);
 }
