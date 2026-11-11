@@ -182,7 +182,8 @@ async def atender(ev: dict, conversa: dict, texto: str):
                 transferir = MARCADOR in resposta
                 resposta = resposta.replace(MARCADOR, "").strip()
             except (httpx.HTTPError, ValueError) as e:
-                log.warning("Dify falhou: %s", e)
+                corpo = getattr(getattr(e, "response", None), "text", "")
+                log.warning("Dify falhou: %s %s", e, detalhe_do_erro(corpo) if corpo else "")
                 resposta, transferir = FALHA, True
 
         # 3. Devolve a resposta no chat
