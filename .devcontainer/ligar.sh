@@ -2,7 +2,8 @@
 # Liga o laboratório sempre que o Codespace abre. Na primeira vez também configura tudo.
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p config
-exec > >(tee -a config/inicio.log) 2>&1
+# Ao recomeçar depois da atualização, a saída já passa pelo tee: um segundo tee duplicaria o log
+[ -n "$KIT_ATUALIZADO" ] || exec > >(tee -a config/inicio.log) 2>&1
 echo "== Ligando o laboratório do Chatbot STJ =="
 
 # Traz a versão nova do kit; se este script mudou, recomeça usando o novo
@@ -63,8 +64,14 @@ echo "[3/4] Ligando os serviços do kit..."
 (cd servicos && docker compose up -d --build) || { echo "ERRO ao ligar os serviços do kit."; exit 1; }
 
 # O chat do painel precisa enxergar o Chatwoot: porta 3000 pública (só o Chatwoot, que tem login)
+# Logo depois de ligar, a porta pode ainda não estar encaminhada e o comando falha: tenta algumas vezes
 if [ -n "$CODESPACE_NAME" ]; then
-  gh codespace ports visibility 3000:public -c "$CODESPACE_NAME" >/dev/null 2>&1 \
+  publica=""
+  for i in 1 2 3 4 5 6; do
+    gh codespace ports visibility 3000:public -c "$CODESPACE_NAME" >/dev/null 2>&1 && publica=1 && break
+    sleep 10
+  done
+  [ -n "$publica" ] \
     || echo "      Aviso: torne a porta 3000 pública na aba PORTAS (botão direito > Visibilidade da porta > Public)."
 fi
 

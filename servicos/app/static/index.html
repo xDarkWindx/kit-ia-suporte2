@@ -97,6 +97,7 @@
     <li>"me passa uma receita de pudim" (recusa: fora do escopo)</li>
     <li>"ATENDENTE" (a conversa aparece como Aberta no Chatwoot)</li>
   </ol>
+  <div class="msg" id="mchat" role="status">Carregando o balão do chat...</div>
 </section>
 
 <section>
@@ -135,6 +136,40 @@
 
 </main>
 
+<!-- Chat on-line do Chatwoot. No portal do tribunal bastaria o script padrão do Chatwoot;
+     aqui ele é carregado pelo painel para tentar de novo enquanto o Chatwoot ainda está ligando. -->
+<script>
+const CHAT_URL = "{{PUB_CHATWOOT}}";
+const chat = {ok: false, carregando: false, ultima: 0};
+function avisoChat(cls, txt) {
+  const m = document.getElementById("mchat");
+  m.textContent = txt; m.style.color = cls ? `var(--${cls})` : "";
+}
+function carregarChat(token) {
+  // tenta no máximo a cada 15 s; o status chama a cada 5 s
+  if (chat.ok || chat.carregando || Date.now() - chat.ultima < 15000) return;
+  chat.carregando = true; chat.ultima = Date.now();
+  const falhou = () => {
+    chat.carregando = false;
+    avisoChat("bad", "O balão do chat não carregou. Se o Chatwoot está OK acima, a porta 3000 precisa estar " +
+      "pública: aba PORTAS › botão direito na linha \"3. Chatwoot\" › Visibilidade da porta › Public. " +
+      "O painel tenta de novo sozinho.");
+  };
+  const g = document.createElement("script");
+  g.src = CHAT_URL + "/packs/js/sdk.js?t=" + Date.now(); g.async = true;
+  g.onerror = () => { g.remove(); falhou(); };
+  g.onload = () => {
+    g.remove();
+    // porta privada: o Codespaces devolve a página de login no lugar do script e o SDK não existe
+    if (!window.chatwootSDK) return falhou();
+    window.chatwootSDK.run({websiteToken: token, baseUrl: CHAT_URL});
+    chat.ok = true; chat.carregando = false;
+    avisoChat("ok", "Balão do chat carregado: clique nele, no canto inferior direito.");
+  };
+  document.body.appendChild(g);
+}
+</script>
+
 <script>
 const nomes = {chatwoot:"Chatwoot", dify:"Dify", conector:"Conector", ouvidoria:"Ouvidoria simulada", tribunal:"API do tribunal", chatwoot_configurado:"Chat on-line criado", dify_configurado:"Chave do Dify salva", kit_atualizado:"Kit atualizado"};
 async function atualizar() {
@@ -145,6 +180,8 @@ async function atualizar() {
       const txt = ok ? "OK" : (k === "dify_configurado" ? "falta" : (k === "kit_atualizado" ? "ver aviso" : "aguardando"));
       return `<div class="item"><span>${nomes[k]}</span><span class="pill ${cls}">${txt}</span></div>`;
     }).join("");
+    if (s.chatwoot && s.website_token) carregarChat(s.website_token);
+    else if (!chat.ok) avisoChat("warn", "O balão do chat aparece quando o Chatwoot e o Chat on-line ficarem OK acima.");
   } catch (e) { document.getElementById("status").textContent = "Não consegui verificar. O kit está ligado?"; }
 }
 atualizar(); setInterval(atualizar, 5000);
@@ -197,16 +234,5 @@ ft.addEventListener("submit", e => { e.preventDefault(); consultar(1); });
 document.getElementById("rajada").addEventListener("click", () => consultar(12));
 </script>
 
-<!-- Chat on-line do Chatwoot (o mesmo script iria no portal do tribunal) -->
-<script>
-(function (d, t) {
-  var TOKEN = "{{WEBSITE_TOKEN}}"; if (!TOKEN) return;
-  var BASE_URL = "{{PUB_CHATWOOT}}";
-  var g = d.createElement(t), s = d.getElementsByTagName(t)[0];
-  g.src = BASE_URL + "/packs/js/sdk.js"; g.defer = true; g.async = true;
-  s.parentNode.insertBefore(g, s);
-  g.onload = function () { window.chatwootSDK.run({ websiteToken: TOKEN, baseUrl: BASE_URL }); };
-})(document, "script");
-</script>
 </body>
 </html>

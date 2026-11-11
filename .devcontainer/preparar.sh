@@ -29,7 +29,7 @@ if ! grep -q "^PGVECTOR_HOST=" dify/.env; then
 fi
 
 # A porta 8443 mostrava o HTTPS do nginx, que fica desligado (o Codespaces já dá o HTTPS):
-# quem abria o link -8443 via erro. Agora a 8443 também entrega o Dify (ver override);
+# quem abria o link -8443 via um erro. Agora a 8443 também entrega o Dify (ver override);
 # o HTTPS interno fica só no localhost:8444. Corrige ambientes criados antes disso.
 sed -i "s#^EXPOSE_NGINX_SSL_PORT=8443\$#EXPOSE_NGINX_SSL_PORT=127.0.0.1:8444#" dify/.env
 

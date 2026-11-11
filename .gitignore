@@ -13,3 +13,6 @@ dify/volumes/*
 dify/volumes/sandbox/*
 !dify/volumes/sandbox/conf/
 dify/nginx/conf.d/default.conf
+
+# Gerados pelo Python
+__pycache__/

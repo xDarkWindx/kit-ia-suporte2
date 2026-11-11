@@ -49,7 +49,7 @@ def corrigir(so_modelo):
             por_base.setdefault(d.dataset_id, []).append(d.id)
     for dataset_id, ids in por_base.items():
         dataset = session.get(Dataset, dataset_id)
-        if dataset.embedding_model in DESATIVADOS:
+        if dataset is None or dataset.embedding_model in DESATIVADOS:  # base apagada ou modelo ainda sem troca
             continue
         retry_document_indexing_task.delay(dataset_id, ids, dataset.created_by)
         print(f"Reindexando {len(ids)} documento(s) da base '{dataset.name}'", flush=True)
