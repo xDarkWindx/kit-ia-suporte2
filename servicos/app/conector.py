@@ -49,9 +49,10 @@ HISTORICO = 30  # quantas consultas ao Dify a página de diagnóstico mostra
 
 
 def registrar(usuario: str, inicio: float, ok: bool, status: int | None = None, erro: dict | None = None,
-              corpo: str = ""):
+              corpo: str = "", pergunta: str = "", resposta: str = ""):
     """Guarda a consulta no histórico de /config/robo.json (página /diagnostico do painel)."""
-    item = {"em": inicio, "segundos": round(time.time() - inicio, 1), "origem": usuario, "ok": ok, "status": status}
+    item = {"em": inicio, "segundos": round(time.time() - inicio, 1), "origem": usuario, "ok": ok, "status": status,
+            "pergunta": pergunta[:500], "resposta": resposta[:3000]}
     if erro:
         item |= {"tipo": erro.get("tipo"), "provedor": erro.get("provedor"),
                  "detalhe": erro.get("detalhe") or detalhe_do_erro(corpo), "corpo": corpo[:2000]}
@@ -113,7 +114,7 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
             )
         except httpx.TransportError as e:
             anotar(erro={"tipo": "dify", "em": time.time(), "detalhe": f"{type(e).__name__}: {e}"})
-            registrar(usuario, inicio, False, erro={"tipo": "dify", "detalhe": f"{type(e).__name__}: {e}"})
+            registrar(usuario, inicio, False, erro={"tipo": "dify", "detalhe": f"{type(e).__name__}: {e}"}, pergunta=texto)
             raise
         if conversa_dify and re.search(r"Conversation Not Exists|conversation_completed", r.text):
             # A conversa sumiu do Dify (ex.: o Dify foi reinstalado) ou foi encerrada: começa outra.
@@ -124,7 +125,11 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
             limites = {k: v for k, v in (ler("robo.json").get("limites") or {}).items()
                        if v.get("volta_em") is None or v["volta_em"] > agora}  # os vencidos já renovaram
             anotar(ok_em=agora, erro=None, limites=limites)
-            registrar(usuario, inicio, True, r.status_code)
+            try:
+                resposta = str(r.json().get("answer", ""))
+            except ValueError:
+                resposta = r.text
+            registrar(usuario, inicio, True, r.status_code, pergunta=texto, resposta=resposta)
             return r
         erro = diagnosticar(r.status_code, r.text)
         if m := re.search(r"gemini|groq|nvidia_nim", r.text, re.I):
@@ -137,7 +142,7 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
     if erro["tipo"] == "limite":  # vale por provedor: uma resposta boa de outro modelo não apaga
         limites[erro.get("provedor", "desconhecido")] = erro
     anotar(erro=erro, limites=limites)
-    registrar(usuario, inicio, False, r.status_code, erro, r.text)
+    registrar(usuario, inicio, False, r.status_code, erro, r.text, pergunta=texto)
     return r
 
 

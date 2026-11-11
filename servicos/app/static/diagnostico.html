@@ -24,6 +24,10 @@
   details { margin-top:6px; } summary { cursor:pointer; color:var(--muted); font-size:13px; }
   pre { background:#26282c; color:#f2efe8; padding:10px 12px; border-radius:8px; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0; max-height:360px; overflow:auto; }
   .vazio { color:var(--muted); }
+  form { display:flex; flex-wrap:wrap; gap:8px; }
+  input[type=text] { flex:1 1 240px; font:inherit; padding:8px 10px; border:1px solid #c9c2b2; border-radius:6px; }
+  .rotulo { font-size:13px; color:var(--muted); margin-top:8px; }
+  .bolha { background:#f2efe8; border-radius:8px; padding:8px 10px; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; }
 </style>
 </head>
 <body>
@@ -35,6 +39,17 @@
   <section>
     <h2>Resumo</h2>
     <div id="resumo" class="vazio">Carregando...</div>
+  </section>
+  <section>
+    <h2>Ver a resposta crua do classificador</h2>
+    <p class="ajuda">Quando o classificador não acha o JSON, o Dify joga fora o que o modelo respondeu (nem os Logs mostram).
+      Este teste manda ao mesmo modelo, com os mesmos parâmetros, exatamente as mensagens que o classificador monta, e mostra
+      a resposta como ela veio. Usa um app separado no Dify, "Diagnóstico do classificador (kit)", e gasta cota.</p>
+    <form id="freproduzir">
+      <input type="text" id="pergunta" name="pergunta" value="oi" aria-label="Pergunta de teste">
+      <button type="submit">Perguntar ao modelo</button>
+    </form>
+    <div id="reproducao"></div>
   </section>
   <section>
     <h2>Execuções no Dify</h2>
@@ -91,12 +106,17 @@ async function carregar() {
     el.classList.remove("vazio");
     el.innerHTML = di.execucoes.map(x => {
       const cls = NOS_STATUS[x.status] || "warn";
-      const nos = (x.nos || []).filter(n => n.status !== "succeeded" || n.erro).concat((x.nos || []).filter(n => n.status === "succeeded" && !n.erro));
       return `<div class="linha ${cls}"><div class="topo"><b>${esc(x.status)}</b><span>${quando(x.created_at)}</span><span>${seg(x.elapsed_time)}</span><span>${x.total_tokens ?? 0} tokens</span></div>` +
+        (x.pergunta ? `<div class="rotulo">Pergunta</div><div class="bolha">${esc(x.pergunta)}</div>` : "") +
+        (x.resposta ? `<div class="rotulo">Resposta do bot</div><div class="bolha">${esc(x.resposta)}</div>` : "") +
         (x.erro ? `<div class="erro">${esc(x.erro)}</div>` : "") +
-        (x.nos ? `<details${x.status !== "succeeded" ? " open" : ""}><summary>Nós desta execução</summary>` + nos.map(n =>
-          `<div class="no"><b>${esc(n.titulo)}</b> · ${esc(n.status)}${n.modelo ? " · " + esc(n.modelo) : ""} ${seg(n.segundos)}` +
-          (n.erro ? `<div class="erro">${esc(n.erro)}</div>` : "") + `</div>`).join("") + `</details>` : "") + `</div>`;
+        (x.nos ? `<details${x.status !== "succeeded" ? " open" : ""}><summary>Nós desta execução</summary>` + x.nos.map(n =>
+          `<div class="no"><b>${esc(n.titulo)}</b> · ${esc(n.status)}${n.modelo ? " · " + esc(n.modelo) : ""} ${seg(n.segundos)}${n.tokens ? " · " + n.tokens + " tokens" : ""}` +
+          (n.erro ? `<div class="erro">${esc(n.erro)}</div>` : "") +
+          (n.erro && n.tipo === "question-classifier" ? `<div>O Dify descarta o texto do modelo neste erro: use "Ver a resposta crua do classificador" acima.</div>` : "") +
+          (n.saida ? `<details><summary>Saída do nó</summary><pre>${esc(n.saida)}</pre></details>` : "") +
+          (n.processo ? `<details><summary>Dados do processamento</summary><pre>${esc(n.processo)}</pre></details>` : "") +
+          `</div>`).join("") + `</details>` : "") + `</div>`;
     }).join("");
   }
 
@@ -106,6 +126,8 @@ async function carregar() {
     hl.classList.remove("vazio");
     hl.innerHTML = h.map(x => `<div class="linha ${x.ok ? "ok" : "bad"}"><div class="topo"><b>${x.ok ? "respondeu" : "falhou"}</b>` +
       `<span>${quando(x.em)}</span><span>${seg(x.segundos)}</span><span>${esc(x.origem)}</span>${x.status ? `<span>HTTP ${x.status}</span>` : ""}</div>` +
+      (x.pergunta ? `<div class="rotulo">Pergunta</div><div class="bolha">${esc(x.pergunta)}</div>` : "") +
+      (x.resposta ? `<div class="rotulo">Resposta do bot</div><div class="bolha">${esc(x.resposta)}</div>` : "") +
       (x.ok ? "" : (DICA[x.tipo] ? `<div>${esc(DICA[x.tipo])}</div>` : "") + (x.detalhe ? `<div class="erro">${esc(x.detalhe)}</div>` : "") +
         (x.corpo ? `<details><summary>Resposta completa do Dify</summary><pre>${esc(x.corpo)}</pre></details>` : "")) + `</div>`).join("");
   }
@@ -121,6 +143,25 @@ async function carregar() {
   document.getElementById("conhecimento").textContent = d.conhecimento_log || "(vazio)";
   document.getElementById("bruto").textContent = JSON.stringify(d, null, 2);
 }
+document.getElementById("freproduzir").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const out = document.getElementById("reproducao"), bt = ev.target.querySelector("button");
+  bt.disabled = true; out.innerHTML = `<div class="linha warn">Perguntando ao modelo (pode levar até 2 minutos)...</div>`;
+  try {
+    const r = await (await fetch("/api/diagnostico/classificador", {method: "POST", body: new FormData(ev.target)})).json();
+    const topo = r.modelo ? `<div class="topo"><b>${esc(r.no)}</b><span>${esc(r.modelo)}</span><span>${seg(r.segundos)}</span>` +
+      (r.uso ? `<span>${r.uso.prompt_tokens ?? "?"} tokens de entrada, ${r.uso.completion_tokens ?? "?"} de saída</span>` : "") + `</div>` +
+      `<div class="rotulo">Parâmetros do modelo: ${esc(JSON.stringify(r.parametros))}</div>` : "";
+    if (r.erro) { out.innerHTML = `<div class="linha bad">${topo}<div class="erro">${esc(r.erro)}</div></div>`; return; }
+    out.innerHTML = `<div class="linha ${r.veredito ? "bad" : "ok"}">${topo}` +
+      `<div class="rotulo">Resposta crua do modelo (exatamente como veio)</div>` +
+      `<pre>${r.texto ? esc(r.texto) : "(vazia: o modelo não devolveu nenhum texto)"}</pre>` +
+      `<div class="${r.veredito ? "erro" : ""}" style="margin-top:6px">${r.veredito
+        ? "O classificador do Dify recusaria esta resposta: " + esc(r.veredito)
+        : "O classificador do Dify aceitaria esta resposta."}</div></div>`;
+  } catch (e) { out.innerHTML = `<div class="linha bad">Não consegui falar com o painel.</div>`; }
+  finally { bt.disabled = false; }
+});
 document.getElementById("atualizar").addEventListener("click", carregar);
 carregar();
 </script>

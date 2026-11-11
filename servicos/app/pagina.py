@@ -319,8 +319,16 @@ def fim_do_arquivo(nome: str, linhas: int = 40) -> str:
         return ""
 
 
+def curto(valor, limite: int = 3000):
+    """Texto de uma saída do Dify para a página: strings como estão, o resto em JSON, sempre com limite."""
+    if valor in (None, "", {}, []):
+        return None
+    texto = valor if isinstance(valor, str) else json.dumps(valor, ensure_ascii=False, indent=1)
+    return texto if len(texto) <= limite else texto[:limite] + " …(cortado)"
+
+
 async def execucoes_no_dify() -> dict:
-    """Últimas execuções do Bot STJ no Dify (as mesmas da tela Logs) e, nas que falharam, o erro de cada nó."""
+    """Últimas execuções do Bot STJ no Dify (as mesmas da tela Logs): pergunta, resposta do bot e o que cada nó fez."""
     app_id = ler("dify.json").get("app_id")
     if not app_id:
         return {"erro": "O painel não sabe o app_id do Bot STJ (chave colada à mão). Veja os Logs no próprio Dify."}
@@ -334,19 +342,244 @@ async def execucoes_no_dify() -> dict:
             execucoes = []
             for run in r.json().get("data", []):
                 item = {k: run.get(k) for k in ("id", "status", "elapsed_time", "total_tokens", "created_at")}
-                if run.get("status") != "succeeded":
-                    d = await h.get(f"{base}/workflow-runs/{run['id']}", headers=cab)
-                    item["erro"] = d.json().get("error") if d.is_success else None
-                    n = await h.get(f"{base}/workflow-runs/{run['id']}/node-executions", headers=cab)
-                    item["nos"] = [{"titulo": x.get("title"), "tipo": x.get("node_type"), "status": x.get("status"),
-                                    "erro": x.get("error"), "segundos": x.get("elapsed_time"),
-                                    "modelo": ((x.get("process_data") or {}).get("model_name")
-                                               or ((x.get("inputs") or {}).get("model") if isinstance(x.get("inputs"), dict) else None))}
-                                   for x in (n.json().get("data", []) if n.is_success else [])]
+                d = await h.get(f"{base}/workflow-runs/{run['id']}", headers=cab)
+                if d.is_success:
+                    det = d.json()
+                    entradas, saidas = det.get("inputs") or {}, det.get("outputs") or {}
+                    item["erro"] = det.get("error")
+                    item["pergunta"] = curto(entradas.get("sys.query") if isinstance(entradas, dict) else None, 500)
+                    item["resposta"] = curto(saidas.get("answer") if isinstance(saidas, dict) and "answer" in saidas else saidas)
+                n = await h.get(f"{base}/workflow-runs/{run['id']}/node-executions", headers=cab)
+                nos = n.json().get("data", []) if n.is_success else []
+                item["nos"] = [{
+                    "titulo": x.get("title"), "tipo": x.get("node_type"), "status": x.get("status"),
+                    "erro": x.get("error"), "segundos": x.get("elapsed_time"),
+                    "tokens": (x.get("execution_metadata") or {}).get("total_tokens"),
+                    "modelo": ((x.get("process_data") or {}).get("model_name")
+                               or ((x.get("inputs") or {}).get("model_name") if isinstance(x.get("inputs"), dict) else None)),
+                    "saida": curto(x.get("outputs")),
+                    "processo": curto({k: v for k, v in (x.get("process_data") or {}).items() if k != "prompts"}, 1500),
+                } for x in sorted(nos, key=lambda x: x.get("index") or 0)]
                 execucoes.append(item)
             return {"execucoes": execucoes}
     except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError) as e:
         return {"erro": f"Não consegui ler os Logs do Dify ({type(e).__name__}). Veja em Estúdio › Bot STJ › Logs."}
+
+
+# --- Reproduzir o classificador ---------------------------------------------------------------
+# Quando o classificador do Dify não acha o JSON na resposta, ele descarta o texto do modelo: nem os
+# Logs mostram. Para ver a resposta crua, o painel mantém um app separado no Dify ("Diagnóstico do
+# classificador (kit)") com um nó LLM que recebe EXATAMENTE as mensagens que o classificador monta
+# (copiadas do Dify 1.17.1, graphon/nodes/question_classifier/template_prompts.py), com o mesmo modelo.
+APP_DIAG = "Diagnóstico do classificador (kit)"
+QC_SISTEMA = (
+    "\n### Job Description',\n"
+    "You are a text classification engine that analyzes text data and assigns "
+    "categories based on user input or automatically determined categories.\n"
+    "### Task\n"
+    "Your task is to assign one categories ONLY to the input text and only one "
+    "category may be assigned returned in the output.\n"
+    "Additionally, you need to extract the key words from the text that are "
+    "related to the classification.\n"
+    "### Format\n"
+    "The input text is in the variable input_text. Categories are specified as a "
+    "category list with two filed category_id and category_name in the variable "
+    "categories. Classification instructions may be included to improve the "
+    "classification accuracy.\n"
+    "### Constraint\n"
+    "DO NOT include anything other than the JSON array in your response.\n"
+    "### Memory\n"
+    "Here are the chat histories between human and assistant, inside "
+    "<histories></histories> XML tags.\n"
+    "<histories>\n"
+    "\n"
+    "</histories>\n"
+)
+QC_USUARIO_1 = (
+    '\n    {"input_text": ["I recently had a great experience with your '
+    'company. The service was prompt and the staff was very friendly."],\n'
+    '    "categories": [{"category_id":"f5660049-284f-41a7-b301-fd24176a711c",'
+    '"category_name":"Customer Service"},'
+    '{"category_id":"8d007d06-f2c9-4be5-8ff6-cd4381c13c60",'
+    '"category_name":"Satisfaction"},'
+    '{"category_id":"5fbbbb18-9843-466d-9b8e-b9bfbb9482c8",'
+    '"category_name":"Sales"},'
+    '{"category_id":"23623c75-7184-4a2e-8226-466c2e4631e4",'
+    '"category_name":"Product"}],\n'
+    '    "classification_instructions": ["classify the text based on the '
+    'feedback provided by customer"]}\n'
+)
+QC_ASSISTENTE_1 = (
+    "\n```json\n"
+    '    {"keywords": ["recently", "great experience", "company", '
+    '"service", "prompt", "staff", "friendly"],\n'
+    '    "category_id": "f5660049-284f-41a7-b301-fd24176a711c",\n'
+    '    "category_name": "Customer Service"}\n'
+    "```\n"
+)
+QC_USUARIO_2 = (
+    '\n    {"input_text": ["bad service, slow to bring the food"],\n'
+    '    "categories": [{"category_id":"80fb86a0-4454-4bf5-924c-f253fdd83c02",'
+    '"category_name":"Food Quality"},'
+    '{"category_id":"f6ff5bc3-aca0-4e4a-8627-e760d0aca78f",'
+    '"category_name":"Experience"},'
+    '{"category_id":"cc771f63-74e7-4c61-882e-3eda9d8ba5d7",'
+    '"category_name":"Price"}],\n'
+    '    "classification_instructions": []}\n'
+)
+QC_ASSISTENTE_2 = (
+    "\n```json\n"
+    '    {"keywords": ["bad service", "slow", "food", "tip", '
+    '"terrible", "waitresses"],\n'
+    '    "category_id": "f6ff5bc3-aca0-4e4a-8627-e760d0aca78f",\n'
+    '    "category_name": "Experience"}\n'
+    "```\n"
+)
+
+
+def acha_json_como_o_dify(texto: str) -> str:
+    """Mesma regra do Dify (graphon/utils/json_in_md_parser.py) para dizer se o classificador aceitaria a resposta."""
+    t = re.sub(r"<think[^>]*>[\s\S]*?</think>", "", texto, flags=re.I).strip()
+    inicio = -1
+    for marca in ["```json", "```", "``", "`", "{", "["]:
+        inicio = t.find(marca)
+        if inicio != -1:
+            if t[inicio] not in "{[":
+                inicio += len(marca)
+            break
+    fim = -1
+    if inicio != -1:
+        for marca in ["```", "``", "`", "}", "]"]:
+            fim = t.rfind(marca, inicio)
+            if fim != -1:
+                if t[fim] in "}]":
+                    fim += 1
+                break
+    if inicio == -1 or fim == -1 or inicio >= fim:
+        return "could not find json block in the output."
+    try:
+        obj = json.loads(t[inicio:fim].strip())
+    except ValueError as e:
+        return f"got invalid json object. error: {e}"
+    if isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], dict):
+        obj = obj[0]
+    if not isinstance(obj, dict) or "category_id" not in obj:
+        return "JSON encontrado, mas sem category_id: o Dify cai na primeira categoria."
+    return ""
+
+
+def app_de_diagnostico(no: dict) -> dict:
+    """DSL do app auxiliar: Início -> LLM com as mensagens do classificador -> Resposta com o texto cru."""
+    d = no["data"]
+    categorias = json.dumps([{"category_id": c["id"], "category_name": c["name"]} for c in d.get("classes", [])],
+                            ensure_ascii=False)
+    instrucao = (d.get("instruction") or "").replace("{{#", "{ {#")  # sem variáveis do outro fluxo
+    usuario_3 = ('\n    {"input_text": ["{{#sys.query#}}"],\n'
+                 f'    "categories": {categorias},\n'
+                 f'    "classification_instructions": ["{instrucao}"]}}\n')
+
+    def nodo(id_, x, data):
+        return {"id": id_, "type": "custom", "data": {**data, "desc": "", "selected": False},
+                "position": {"x": x, "y": 200}, "positionAbsolute": {"x": x, "y": 200},
+                "sourcePosition": "right", "targetPosition": "left", "width": 244, "height": 90, "selected": False}
+
+    def aresta(a, b, ta, tb):
+        return {"id": f"{a}-source-{b}", "source": a, "sourceHandle": "source", "target": b, "targetHandle": "target",
+                "type": "custom", "zIndex": 0,
+                "data": {"isInIteration": False, "isInLoop": False, "sourceType": ta, "targetType": tb}}
+
+    grafo = {
+        "nodes": [
+            nodo("inicio", 30, {"type": "start", "title": "Início", "variables": []}),
+            nodo("modelo", 330, {
+                "type": "llm", "title": "Mesmo modelo e mensagens do classificador",
+                "model": d["model"], "reasoning_format": "tagged",
+                "context": {"enabled": False, "variable_selector": []}, "variables": [], "vision": {"enabled": False},
+                "prompt_template": [
+                    {"role": "system", "text": QC_SISTEMA}, {"role": "user", "text": QC_USUARIO_1},
+                    {"role": "assistant", "text": QC_ASSISTENTE_1}, {"role": "user", "text": QC_USUARIO_2},
+                    {"role": "assistant", "text": QC_ASSISTENTE_2}, {"role": "user", "text": usuario_3}]}),
+            nodo("resposta", 630, {"type": "answer", "title": "Resposta crua", "answer": "{{#modelo.text#}}",
+                                   "variables": []}),
+        ],
+        "edges": [aresta("inicio", "modelo", "start", "llm"), aresta("modelo", "resposta", "llm", "answer")],
+        "viewport": {"x": 0, "y": 0, "zoom": 0.8},
+    }
+    recursos = {"file_upload": {}, "opening_statement": "", "retriever_resource": {"enabled": False},
+                "sensitive_word_avoidance": {"enabled": False}, "speech_to_text": {"enabled": False},
+                "suggested_questions": [], "suggested_questions_after_answer": {"enabled": False},
+                "text_to_speech": {"enabled": False, "language": "", "voice": ""}}
+    return {"app": {"name": APP_DIAG, "mode": "advanced-chat", "icon": "🔎", "icon_background": "#F3EFE7",
+                    "description": "Criado pelo painel do kit: mostra a resposta crua do modelo do classificador.",
+                    "use_icon_as_answer_icon": False},
+            "kind": "app", "version": "0.7.0", "dependencies": [],
+            "workflow": {"conversation_variables": [], "environment_variables": [], "features": recursos,
+                         "graph": grafo}}
+
+
+async def preparar_app_de_diagnostico(h: httpx.AsyncClient, cab: dict, dsl: dict) -> str:
+    """Cria o app auxiliar na primeira vez; depois só troca o fluxo (o modelo do classificador pode ter mudado)."""
+    diag = ler("diagnostico.json")
+    app_id, chave = diag.get("app_id"), diag.get("chave")
+    base = f"{URL['dify']}/console/api/apps"
+    if app_id and chave and (r := await h.get(f"{base}/{app_id}/workflows/draft", headers=cab)).is_success:
+        rascunho = r.json()
+        (await h.post(f"{base}/{app_id}/workflows/draft", headers=cab,
+                      json={"graph": dsl["workflow"]["graph"], "features": rascunho["features"],
+                            "hash": rascunho["hash"]})).raise_for_status()
+    else:  # app apagado ou nunca criado
+        r = await h.post(f"{base}/imports", headers=cab,
+                         json={"mode": "yaml-content", "yaml_content": json.dumps(dsl, ensure_ascii=False)})
+        imp = r.json()
+        if r.status_code == 202:
+            r = await h.post(f"{base}/imports/{imp['id']}/confirm", headers=cab)
+            imp = r.json()
+        if r.status_code >= 400 or not imp.get("app_id"):
+            raise ValueError(f"importação do app de diagnóstico falhou: HTTP {r.status_code} {r.text[:300]}")
+        app_id = imp["app_id"]
+        r = await h.post(f"{base}/{app_id}/api-keys", headers=cab)
+        r.raise_for_status()
+        chave = r.json()["token"]
+        (CONFIG / "diagnostico.json").write_text(json.dumps({"app_id": app_id, "chave": chave}), encoding="utf-8")
+    (await h.post(f"{base}/{app_id}/workflows/publish", headers=cab,
+                  json={"marked_name": "Painel do kit", "marked_comment": ""})).raise_for_status()
+    return chave
+
+
+@app.post("/api/diagnostico/classificador")
+async def reproduzir_classificador(pergunta: str = Form(...)):
+    pergunta = pergunta.strip()[:500] or "oi"
+    app_id = ler("dify.json").get("app_id")
+    if not app_id:
+        return JSONResponse({"erro": "O painel não sabe o app_id do Bot STJ (chave colada à mão)."}, 400)
+    try:
+        async with httpx.AsyncClient(timeout=120) as h:
+            cab = await entrar_no_dify(h)
+            r = await h.get(f"{URL['dify']}/console/api/apps/{app_id}/workflows/publish", headers=cab)
+            r.raise_for_status()
+            no = next((n for n in r.json()["graph"]["nodes"] if n["data"].get("type") == "question-classifier"), None)
+            if not no:
+                return JSONResponse({"erro": "O Bot STJ publicado não tem nó classificador."}, 400)
+            chave = await preparar_app_de_diagnostico(h, cab, app_de_diagnostico(no))
+            inicio = time.time()
+            r = await h.post(f"{URL['dify']}/v1/chat-messages", headers={"Authorization": f"Bearer {chave}"},
+                             json={"inputs": {}, "query": pergunta, "response_mode": "blocking", "user": "painel-diagnostico"})
+            modelo = no["data"]["model"]
+            base = {"no": no["data"].get("title"), "modelo": modelo.get("name"), "provedor": modelo.get("provider"),
+                    "parametros": modelo.get("completion_params") or {}, "pergunta": pergunta,
+                    "segundos": round(time.time() - inicio, 1)}
+            if not r.is_success:
+                try:
+                    msg = r.json().get("message") or r.text
+                except ValueError:
+                    msg = r.text
+                return {**base, "erro": f"O modelo recusou a chamada (HTTP {r.status_code}): {msg[:1000]}"}
+            dados = r.json()
+            texto = dados.get("answer", "")
+            return {**base, "texto": texto, "uso": (dados.get("metadata") or {}).get("usage"),
+                    "veredito": acha_json_como_o_dify(texto)}
+    except (OSError, ValueError, KeyError, TypeError, StopIteration, httpx.HTTPError) as e:
+        return JSONResponse({"erro": f"Não consegui reproduzir no Dify: {type(e).__name__}: {e}"[:600]}, 502)
 
 
 @app.get("/api/diagnostico")
