@@ -224,7 +224,7 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
         no = f"{nos[0]['no']} ({nos[0]['modelo']})" if nos else "Classificador de escopo"
         cls, titulo = "bad", "Robô parado: o modelo do classificador não respondeu no formato que o Dify exige."
         acao = (f"O nó {no} precisa de um modelo que devolva JSON sem 'pensar em voz alta'. No Dify, abra o app "
-                "Bot STJ, troque o modelo desse nó (ex.: nvidia/llama-3.1-nemotron-70b-instruct ou openai/gpt-oss-20b) "
+                "Bot STJ, troque o modelo desse nó (ex.: nvidia/nemotron-3.5-bolt-e4b no NVIDIA NIM, ou openai/gpt-oss-20b no Groq) "
                 "e clique em Publicar.")
     elif tipo == "chave_dify":
         cls, titulo = "bad", "Robô parado: a chave do Dify está faltando ou foi recusada."
