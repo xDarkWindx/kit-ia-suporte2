@@ -63,7 +63,8 @@ cd ..
 echo "[3/4] Ligando os serviços do kit..."
 (cd servicos && docker compose up -d --build) || { echo "ERRO ao ligar os serviços do kit."; exit 1; }
 
-# O chat do painel precisa enxergar o Chatwoot: porta 3000 pública (só o Chatwoot, que tem login)
+# O balão do chat agora passa pelo painel (porta 8080). A porta 3000 pública continua ajudando quem abre o Chatwoot
+# por link compartilhado (só o Chatwoot, que tem login)
 # Logo depois de ligar, a porta pode ainda não estar encaminhada e o comando falha: tenta algumas vezes
 if [ -n "$CODESPACE_NAME" ]; then
   publica=""

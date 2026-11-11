@@ -4,6 +4,7 @@ Mostra se tudo está ligado e se o robô está respondendo, guarda a chave do Di
 abre o chat on-line de teste e tem botões para testar a ouvidoria e a API do
 tribunal, sem comandos.
 """
+import asyncio
 import base64
 import json
 import os
@@ -12,8 +13,9 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+import websockets
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 CONFIG = Path(os.environ.get("KIT_CONFIG", "/config"))
 URL = {
@@ -27,7 +29,6 @@ app = FastAPI(title="Página do kit")
 STATIC = Path(__file__).parent / "static"
 SOBRECARGA_VALE = 600  # depois de 10 minutos, um erro de sobrecarga já não diz nada
 PROVEDORES = {"groq": "Groq", "gemini": "Gemini"}  # sempre aparecem no painel, mesmo fora de uso
-porta = {"em": 0.0, "publica": None}  # última verificação da porta 3000 pelo endereço público
 contas = {"em": 0.0, "provedores": {}, "bloqueio": {"verificado": False, "em": None}, "token": ""}  # última verificação de Dify e Chatwoot
 
 
@@ -46,31 +47,6 @@ def inicio():
                .replace("{{SENHA}}", cw.get("senha", "Suporte@2026")) \
                .replace("{{PUB_DIFY}}", os.environ.get("PUB_DIFY", "http://localhost:8081")) \
                .replace("{{PUB_CHATWOOT}}", os.environ.get("PUB_CHATWOOT", "http://localhost:3000"))
-
-
-async def porta_do_chat_publica() -> bool | None:
-    """Testa o Chatwoot pelo endereço público, como o navegador do aluno faria (no Codespaces, porta 3000).
-
-    True: responde sem login. False: o Codespaces pede login (porta privada). None: não deu para saber
-    (fora do Codespaces, sem internet ou resposta inesperada). Repete no máximo a cada 20 s.
-    """
-    pub = os.environ.get("PUB_CHATWOOT", "")
-    if not pub.startswith("https://"):
-        return None  # computador da professora/aluno: localhost não tem porta privada
-    if time.time() - porta["em"] < 20:
-        return porta["publica"]
-    publica = None
-    try:
-        async with httpx.AsyncClient(timeout=6, follow_redirects=False) as h:
-            r = await h.get(pub + "/api")
-        if r.status_code in (301, 302, 303, 307, 308, 401, 403):
-            publica = False
-        elif r.status_code == 200 and "version" in r.text:
-            publica = True
-    except httpx.HTTPError:
-        pass
-    porta.update(em=time.time(), publica=publica)
-    return publica
 
 
 @app.get("/api/status")
@@ -93,7 +69,6 @@ async def status():
         "kit_atualizado": ler("atualizacao.json").get("situacao", "ok") == "ok",
         # o painel liga o balão do chat assim que o Chatwoot fica pronto, sem precisar recarregar
         "website_token": ler("chatwoot.json").get("website_token", ""),
-        "porta_chat_publica": await porta_do_chat_publica(),
     }
 
 
@@ -323,3 +298,63 @@ async def teste_tribunal(numero: str = Form(...), token: str = Form(""), vezes: 
     except httpx.HTTPError:
         resultados.append({"status": None, "resposta": "A API do tribunal simulada não respondeu. Confira o item 1 do painel."})
     return resultados
+
+
+# ---------------------------------------------------------------------------------------------
+# Chat on-line servido pelo próprio painel. No Codespaces, quem abre a porta 3000 pelo navegador
+# vê antes o aviso "You are about to access a development port"; o cookie que libera esse aviso
+# vale só na aba onde ele foi aceito (Partitioned), nunca dentro do painel. Por isso o balão,
+# que é um iframe da porta 3000, ficava preso no aviso e não aparecia. Passando pelo painel
+# (mesmo endereço da página), não há aviso. Estas rotas ficam por último: as do painel têm prioridade.
+SEM_REPASSE = {"host", "content-length", "transfer-encoding", "connection", "keep-alive", "upgrade",
+               "accept-encoding", "content-encoding"}
+cliente = {"http": None}
+
+
+@app.websocket("/cable")
+async def chatwoot_tempo_real(ws: WebSocket):
+    """Websocket do Chatwoot: é por ele que a resposta do bot chega ao balão sem recarregar."""
+    protocolos = [p.strip() for p in ws.headers.get("sec-websocket-protocol", "").split(",") if p.strip()]
+    destino = re.sub(r"^http", "ws", URL["chatwoot"]) + "/cable"
+    try:
+        # Origin igual ao endereço interno: o Chatwoot só aceita websocket do próprio endereço
+        async with websockets.connect(destino, subprotocols=protocolos or None, origin=URL["chatwoot"]) as cw:
+            await ws.accept(subprotocol=cw.subprotocol)
+
+            async def ida():
+                while True:
+                    await cw.send(await ws.receive_text())
+
+            async def volta():
+                async for m in cw:
+                    await ws.send_text(m if isinstance(m, str) else m.decode())
+
+            tarefas = [asyncio.create_task(ida()), asyncio.create_task(volta())]
+            await asyncio.wait(tarefas, return_when=asyncio.FIRST_COMPLETED)
+            for t in tarefas:
+                t.cancel()
+    except (OSError, websockets.WebSocketException, WebSocketDisconnect):
+        pass
+    finally:
+        try:
+            await ws.close()
+        except RuntimeError:
+            pass  # já fechado
+
+
+@app.api_route("/{caminho:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+async def chatwoot_pelo_painel(caminho: str, request: Request):
+    """Repassa ao Chatwoot o que o balão pede: /packs/js/sdk.js, /widget, /api/v1/widget/..., /vite/..."""
+    if cliente["http"] is None:
+        cliente["http"] = httpx.AsyncClient(timeout=30)
+    cab = {k: v for k, v in request.headers.items() if k.lower() not in SEM_REPASSE}
+    try:
+        r = await cliente["http"].request(request.method, f"{URL['chatwoot']}/{caminho}", params=request.query_params,
+                                          headers=cab, content=await request.body())
+    except httpx.HTTPError:
+        return Response("O Chatwoot não respondeu. Confira o item 1 do painel.", status_code=502)
+    resp = Response(content=r.content, status_code=r.status_code)
+    for k, v in r.headers.multi_items():
+        if k.lower() not in SEM_REPASSE:
+            resp.headers.append(k, v)
+    return resp

@@ -140,10 +140,11 @@
 <!-- Chat on-line do Chatwoot. No portal do tribunal bastaria o script padrão do Chatwoot;
      aqui ele é carregado pelo painel para tentar de novo enquanto o Chatwoot ainda está ligando. -->
 <script>
-const CHAT_URL = "{{PUB_CHATWOOT}}";
+// O balão vem pelo próprio painel, que repassa ao Chatwoot: assim o aviso de porta do Codespaces não o bloqueia
+const CHAT_URL = location.origin;
 // fase: esperando › carregando (baixa o script) › abrindo (o balão é um iframe da porta 3000) › pronto
 // Só fica "pronto" quando o Chatwoot avisa que o iframe abriu E o botão do balão existe na página.
-const chat = {fase: "esperando", ultima: 0, espera: 0, publica: null};
+const chat = {fase: "esperando", ultima: 0, espera: 0};
 const ESPERA_BALAO = 20000;
 function avisoChat(cls, txt) {
   const m = document.getElementById("mchat");
@@ -163,16 +164,10 @@ const balaoNaTela = () => !!(window.$chatwoot && window.$chatwoot.hasLoaded && d
 function falhou(token, motivo) {
   limparBalao();
   chat.fase = "esperando"; chat.ultima = Date.now(); chat.espera = 30000;
-  const passo = " O painel tenta de novo sozinho. Enquanto isso, converse pelo botão abaixo: é o mesmo chat.";
-  if (motivo === "script" || chat.publica === false)
-    avisoChat("bad", "O balão do chat não carregou: a porta 3000 não está pública. Aba PORTAS › botão direito na linha " +
-      "\"3. Chatwoot\" › Visibilidade da porta › Public (só aceitar o aviso do endereço não basta)." + passo);
-  else if (chat.publica === true)
-    avisoChat("warn", "A porta 3000 está pública, mas o navegador não deixou o balão abrir dentro do painel " +
-      "(aviso do Codespaces ou bloqueio de cookies de terceiros). Abra o Chatwoot uma vez pelo botão da seção 2, " +
-      "aceite o aviso e recarregue esta página." + passo);
-  else
-    avisoChat("warn", "O balão do chat não abriu. Confira se a porta 3000 está Public na aba PORTAS e recarregue a página." + passo);
+  avisoChat("warn", (motivo === "script"
+      ? "O balão do chat não carregou: o painel não conseguiu falar com o Chatwoot."
+      : "O balão do chat não abriu.") +
+    " O painel tenta de novo sozinho. Enquanto isso, converse pelo botão abaixo: é o mesmo chat.");
   chatEmOutraAba(token, true);
 }
 
@@ -211,18 +206,9 @@ function carregarChat(token) {
 }
 
 function situacaoDoChat(s) {  // chamada a cada 5 s com o /api/status
-  chat.publica = s.porta_chat_publica;
   if (chat.fase === "pronto") return;
   if (!(s.chatwoot && s.website_token)) {
     if (chat.fase === "esperando") avisoChat("warn", "O balão do chat aparece quando o Chatwoot e o Chat on-line ficarem OK acima.");
-    return;
-  }
-  if (chat.publica === false && chat.fase === "esperando") {
-    // o servidor confirmou pelo endereço público: o Codespaces pede login na porta 3000
-    avisoChat("bad", "A porta 3000 (Chatwoot) está privada, por isso o balão não aparece. Aba PORTAS › botão direito " +
-      "na linha \"3. Chatwoot\" › Visibilidade da porta › Public. O balão aparece sozinho em seguida. " +
-      "Enquanto isso, converse pelo botão abaixo.");
-    chatEmOutraAba(s.website_token, true);
     return;
   }
   carregarChat(s.website_token);
