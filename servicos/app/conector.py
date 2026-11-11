@@ -88,6 +88,10 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
         except httpx.TransportError:
             anotar(erro={"tipo": "dify", "em": time.time()})
             raise
+        if conversa_dify and re.search(r"Conversation Not Exists|conversation_completed", r.text):
+            # A conversa sumiu do Dify (ex.: o Dify foi reinstalado) ou foi encerrada: começa outra.
+            # Sem isto, o 404 "not_found" era lido como "modelo não existe" e a conversa travava.
+            return await consultar(http, chave, "", texto, usuario)
         if r.is_success:
             agora = time.time()
             limites = {k: v for k, v in (ler("robo.json").get("limites") or {}).items()
