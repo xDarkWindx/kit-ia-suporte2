@@ -45,6 +45,19 @@ def anotar(**campos):
     (CONFIG / "robo.json").write_text(json.dumps(ler("robo.json") | campos), encoding="utf-8")
 
 
+HISTORICO = 30  # quantas consultas ao Dify a página de diagnóstico mostra
+
+
+def registrar(usuario: str, inicio: float, ok: bool, status: int | None = None, erro: dict | None = None,
+              corpo: str = ""):
+    """Guarda a consulta no histórico de /config/robo.json (página /diagnostico do painel)."""
+    item = {"em": inicio, "segundos": round(time.time() - inicio, 1), "origem": usuario, "ok": ok, "status": status}
+    if erro:
+        item |= {"tipo": erro.get("tipo"), "provedor": erro.get("provedor"),
+                 "detalhe": erro.get("detalhe") or detalhe_do_erro(corpo), "corpo": corpo[:2000]}
+    anotar(historico=([item] + (ler("robo.json").get("historico") or []))[:HISTORICO])
+
+
 def segundos_de_espera(corpo: str) -> int | None:
     """Lê quanto falta para o limite renovar: Gemini (retryDelay: 50010s) ou Groq (try again in 7m12.5s)."""
     if m := re.search(r"retryDelay\W+(\d+)", corpo):
@@ -70,6 +83,9 @@ def diagnosticar(status: int, corpo: str) -> dict:
         return {"tipo": "sobrecarga", "em": agora}
     if re.search(r"API_KEY_INVALID|invalid_api_key|PERMISSION_DENIED|UNAUTHENTICATED|credential|not configured", corpo, re.I):
         return {"tipo": "conta", "em": agora}
+    if re.search(r"could not find json block|Invalid JSON|parse.*json", corpo, re.I):
+        # classificador/extrator do Dify: o modelo não devolveu o JSON pedido (comum em modelos que "pensam")
+        return {"tipo": "json", "em": agora, "detalhe": detalhe_do_erro(corpo)}
     if re.search(r"NOT_FOUND|model_not_found|decommissioned", corpo, re.I):
         return {"tipo": "modelo", "em": agora}
     return {"tipo": "outro", "em": agora, "detalhe": detalhe_do_erro(corpo)}
@@ -86,6 +102,7 @@ def detalhe_do_erro(corpo: str) -> str:
 
 async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, texto: str, usuario: str) -> httpx.Response:
     """Pergunta ao Dify e anota o resultado. Só repete em sobrecarga ou em limite que renova logo."""
+    inicio = time.time()
     for tentativa in range(TENTATIVAS):
         try:
             r = await http.post(
@@ -94,8 +111,9 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
                 json={"inputs": {}, "query": texto, "response_mode": "blocking",
                       "conversation_id": conversa_dify, "user": usuario},
             )
-        except httpx.TransportError:
-            anotar(erro={"tipo": "dify", "em": time.time()})
+        except httpx.TransportError as e:
+            anotar(erro={"tipo": "dify", "em": time.time(), "detalhe": f"{type(e).__name__}: {e}"})
+            registrar(usuario, inicio, False, erro={"tipo": "dify", "detalhe": f"{type(e).__name__}: {e}"})
             raise
         if conversa_dify and re.search(r"Conversation Not Exists|conversation_completed", r.text):
             # A conversa sumiu do Dify (ex.: o Dify foi reinstalado) ou foi encerrada: começa outra.
@@ -106,6 +124,7 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
             limites = {k: v for k, v in (ler("robo.json").get("limites") or {}).items()
                        if v.get("volta_em") is None or v["volta_em"] > agora}  # os vencidos já renovaram
             anotar(ok_em=agora, erro=None, limites=limites)
+            registrar(usuario, inicio, True, r.status_code)
             return r
         erro = diagnosticar(r.status_code, r.text)
         if m := re.search(r"gemini|groq|nvidia_nim", r.text, re.I):
@@ -118,6 +137,7 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
     if erro["tipo"] == "limite":  # vale por provedor: uma resposta boa de outro modelo não apaga
         limites[erro.get("provedor", "desconhecido")] = erro
     anotar(erro=erro, limites=limites)
+    registrar(usuario, inicio, False, r.status_code, erro, r.text)
     return r
 
 

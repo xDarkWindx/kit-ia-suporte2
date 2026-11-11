@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnóstico do robô</title>
+<style>
+  :root { --bg:#faf8f4; --card:#fff; --fg:#26282c; --muted:#6b6f76; --gold:#9e8954; --line:#e3ddd0; --ok:#1e7b46; --bad:#b3261e; --warn:#a15c00; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI", Ubuntu, Arial, sans-serif; background:var(--bg); color:var(--fg); font-size:15px; line-height:1.5; }
+  header { background:#404348; color:#fff; padding:16px 24px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  header h1 { margin:0; font-size:20px; }
+  main { max-width:1000px; margin:0 auto; padding:20px 16px 60px; display:grid; gap:16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; min-width:0; }
+  h2 { margin:0 0 4px; font-size:17px; }
+  p.ajuda { margin:0 0 10px; color:var(--muted); }
+  button, a.botao { background:var(--gold); color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; }
+  .linha { border:1px solid var(--line); border-left:5px solid var(--line); border-radius:8px; padding:8px 12px; margin-top:8px; }
+  .linha.ok { border-left-color:var(--ok); } .linha.bad { border-left-color:var(--bad); } .linha.warn { border-left-color:var(--warn); }
+  .topo { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:14px; color:var(--muted); }
+  .topo b { color:var(--fg); }
+  .erro { color:var(--bad); font-weight:600; margin-top:4px; overflow-wrap:anywhere; }
+  .no { font-size:14px; margin:4px 0 0 10px; overflow-wrap:anywhere; }
+  details { margin-top:6px; } summary { cursor:pointer; color:var(--muted); font-size:13px; }
+  pre { background:#26282c; color:#f2efe8; padding:10px 12px; border-radius:8px; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 0; max-height:360px; overflow:auto; }
+  .vazio { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Diagnóstico do robô</h1>
+  <span><button type="button" id="atualizar">Atualizar</button> <a class="botao" href="/">Voltar ao painel</a></span>
+</header>
+<main>
+  <section>
+    <h2>Resumo</h2>
+    <div id="resumo" class="vazio">Carregando...</div>
+  </section>
+  <section>
+    <h2>Execuções no Dify</h2>
+    <p class="ajuda">As 10 últimas conversas que chegaram ao Bot STJ (as mesmas da tela Logs do Dify). Nas que falharam, aparece o nó que falhou e o erro.</p>
+    <div id="dify" class="vazio">Carregando...</div>
+  </section>
+  <section>
+    <h2>Perguntas que o conector fez ao Dify</h2>
+    <p class="ajuda">Cada mensagem do chat (ou o botão Testar agora), com o tempo que levou e a resposta de erro completa.</p>
+    <div id="historico" class="vazio">Carregando...</div>
+  </section>
+  <section>
+    <h2>Modelos de IA no robô publicado</h2>
+    <div id="provedores" class="vazio">Carregando...</div>
+  </section>
+  <section>
+    <h2>Registros do kit</h2>
+    <details><summary>Inicialização (config/inicio.log, fim)</summary><pre id="inicio"></pre></details>
+    <details><summary>Base de conhecimento (config/conhecimento.log, fim)</summary><pre id="conhecimento"></pre></details>
+    <details><summary>Tudo em JSON (para mandar a quem for ajudar)</summary><pre id="bruto"></pre></details>
+  </section>
+</main>
+<script>
+const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const quando = t => t ? new Date(t * 1000).toLocaleString("pt-BR", {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "—";
+const seg = s => s == null ? "" : `${Number(s).toFixed(1)} s`;
+const DICA = {
+  json: "O modelo do classificador não devolveu o JSON que o Dify exige. Use um modelo que não 'pensa em voz alta' nesse nó.",
+  limite: "Limite de uso do provedor de IA atingido.", sobrecarga: "Provedor de IA sobrecarregado; costuma passar sozinho.",
+  conta: "Chave do provedor de IA ausente ou recusada.", modelo: "O modelo escolhido não existe mais no provedor.",
+  chave_dify: "A chave do Dify está faltando ou foi recusada.", dify: "O conector não conseguiu falar com o Dify (fora do ar ou demorou mais de 60 s).",
+};
+const NOS_STATUS = {succeeded:"ok", failed:"bad", exception:"bad", stopped:"warn", running:"warn", "partial-succeeded":"warn"};
+
+async function carregar() {
+  let d;
+  try { d = await (await fetch("/api/diagnostico")).json(); }
+  catch (e) { document.getElementById("resumo").textContent = "Não consegui falar com o painel. O kit está ligado?"; return; }
+
+  const r = d.robo || {}, e = r.erro || {};
+  document.getElementById("resumo").classList.remove("vazio");
+  document.getElementById("resumo").innerHTML =
+    `<div class="topo"><span>Última resposta boa da IA: <b>${quando(r.ok_em)}</b></span>` +
+    `<span>Última mensagem recebida do chat: <b>${quando(r.recebida_em)}</b></span></div>` +
+    (e.tipo ? `<div class="linha bad"><div class="topo"><b>Último erro (${esc(e.tipo)})</b><span>${quando(e.em)}</span></div>` +
+      (DICA[e.tipo] ? `<div>${esc(DICA[e.tipo])}</div>` : "") +
+      (e.detalhe ? `<div class="erro">${esc(e.detalhe)}</div>` : "") + `</div>`
+      : `<div class="linha ok">Nenhum erro guardado desde a última resposta boa.</div>`);
+
+  const di = d.dify || {}, el = document.getElementById("dify");
+  if (di.erro) { el.textContent = di.erro; }
+  else if (!(di.execucoes || []).length) { el.textContent = "Nenhuma conversa chegou ao Bot STJ ainda."; }
+  else {
+    el.classList.remove("vazio");
+    el.innerHTML = di.execucoes.map(x => {
+      const cls = NOS_STATUS[x.status] || "warn";
+      const nos = (x.nos || []).filter(n => n.status !== "succeeded" || n.erro).concat((x.nos || []).filter(n => n.status === "succeeded" && !n.erro));
+      return `<div class="linha ${cls}"><div class="topo"><b>${esc(x.status)}</b><span>${quando(x.created_at)}</span><span>${seg(x.elapsed_time)}</span><span>${x.total_tokens ?? 0} tokens</span></div>` +
+        (x.erro ? `<div class="erro">${esc(x.erro)}</div>` : "") +
+        (x.nos ? `<details${x.status !== "succeeded" ? " open" : ""}><summary>Nós desta execução</summary>` + nos.map(n =>
+          `<div class="no"><b>${esc(n.titulo)}</b> · ${esc(n.status)}${n.modelo ? " · " + esc(n.modelo) : ""} ${seg(n.segundos)}` +
+          (n.erro ? `<div class="erro">${esc(n.erro)}</div>` : "") + `</div>`).join("") + `</details>` : "") + `</div>`;
+    }).join("");
+  }
+
+  const h = d.historico || [], hl = document.getElementById("historico");
+  if (!h.length) hl.textContent = "Ainda não há registro (o histórico começa a contar a partir desta versão do kit).";
+  else {
+    hl.classList.remove("vazio");
+    hl.innerHTML = h.map(x => `<div class="linha ${x.ok ? "ok" : "bad"}"><div class="topo"><b>${x.ok ? "respondeu" : "falhou"}</b>` +
+      `<span>${quando(x.em)}</span><span>${seg(x.segundos)}</span><span>${esc(x.origem)}</span>${x.status ? `<span>HTTP ${x.status}</span>` : ""}</div>` +
+      (x.ok ? "" : (DICA[x.tipo] ? `<div>${esc(DICA[x.tipo])}</div>` : "") + (x.detalhe ? `<div class="erro">${esc(x.detalhe)}</div>` : "") +
+        (x.corpo ? `<details><summary>Resposta completa do Dify</summary><pre>${esc(x.corpo)}</pre></details>` : "")) + `</div>`).join("");
+  }
+
+  const p = Object.values(d.provedores || {}), pl = document.getElementById("provedores");
+  pl.classList.remove("vazio");
+  pl.innerHTML = p.map(x => `<div class="linha ${x.conta ? "ok" : (x.usos.length ? "bad" : "")}"><div class="topo"><b>${esc(x.nome)}</b>` +
+    `<span>conta ${x.conta ? "conectada" : x.conta === false ? "não conectada" : "sem dados"}</span></div>` +
+    (x.usos.length ? x.usos.map(u => `<div class="no">${esc(u.no)}: <b>${esc(u.modelo)}</b></div>`).join("") : `<div class="no">não usado no robô publicado</div>`) +
+    `</div>`).join("") || "Sem dados do Dify.";
+
+  document.getElementById("inicio").textContent = d.inicio_log || "(vazio)";
+  document.getElementById("conhecimento").textContent = d.conhecimento_log || "(vazio)";
+  document.getElementById("bruto").textContent = JSON.stringify(d, null, 2);
+}
+document.getElementById("atualizar").addEventListener("click", carregar);
+carregar();
+</script>
+</body>
+</html>

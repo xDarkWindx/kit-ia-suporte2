@@ -72,17 +72,22 @@ async def status():
     }
 
 
+async def entrar_no_dify(h: httpx.AsyncClient) -> dict:
+    """Entra no console do Dify com o login do kit e devolve o cabeçalho que as próximas chamadas exigem."""
+    senha = (CONFIG / ".senha").read_text(encoding="utf-8").strip()
+    r = await h.post(URL["dify"] + "/console/api/login",
+                     json={"email": ler("chatwoot.json").get("login"), "remember_me": True,
+                           "password": base64.b64encode(senha.encode()).decode()})
+    r.raise_for_status()
+    return {"X-CSRF-Token": h.cookies.get("csrf_token") or h.cookies.get("__Host-csrf_token") or ""}
+
+
 async def provedores_de_ia() -> dict:
     """Pergunta ao Dify quais contas estão cadastradas e onde o robô publicado usa cada uma (não gasta cota)."""
     provedores = {id_: {"nome": nome, "conta": None, "usos": []} for id_, nome in PROVEDORES.items()}
     try:
-        senha = (CONFIG / ".senha").read_text(encoding="utf-8").strip()
         async with httpx.AsyncClient(timeout=10) as h:
-            r = await h.post(URL["dify"] + "/console/api/login",
-                             json={"email": ler("chatwoot.json").get("login"), "remember_me": True,
-                                   "password": base64.b64encode(senha.encode()).decode()})
-            r.raise_for_status()
-            cab = {"X-CSRF-Token": h.cookies.get("csrf_token") or h.cookies.get("__Host-csrf_token") or ""}
+            cab = await entrar_no_dify(h)
             r = await h.get(URL["dify"] + "/console/api/workspaces/current/model-providers", headers=cab)
             r.raise_for_status()
             for p in provedores.values():
@@ -214,6 +219,13 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
     elif tipo == "modelo":
         cls, titulo = "bad", "Robô parado: um modelo escolhido não existe mais no provedor."
         acao = "No Dify, abra o app Bot STJ, escolha outro modelo nos nós de IA e clique em Publicar."
+    elif tipo == "json":
+        nos = [u for p in em_uso.values() for u in p["usos"] if "classific" in u["no"].lower()]
+        no = f"{nos[0]['no']} ({nos[0]['modelo']})" if nos else "Classificador de escopo"
+        cls, titulo = "bad", "Robô parado: o modelo do classificador não respondeu no formato que o Dify exige."
+        acao = (f"O nó {no} precisa de um modelo que devolva JSON sem 'pensar em voz alta'. No Dify, abra o app "
+                "Bot STJ, troque o modelo desse nó (ex.: nvidia/llama-3.1-nemotron-70b-instruct ou openai/gpt-oss-20b) "
+                "e clique em Publicar.")
     elif tipo == "chave_dify":
         cls, titulo = "bad", "Robô parado: a chave do Dify está faltando ou foi recusada."
         acao = "Gere uma nova chave e salve no item 3 abaixo."
@@ -221,10 +233,10 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
         cls, titulo = "bad", "Robô parado: o conector não conseguiu falar com o Dify."
         acao = "Confira se o Dify está OK na lista acima."
     elif tipo == "outro":
-        cls, titulo = "bad", "A última pergunta ao robô falhou."
+        cls, titulo = "bad", "A última pergunta ao robô falhou."  # detalhes completos em /diagnostico
         detalhe = (erro.get("detalhe") or "").replace("{", "(").replace("}", ")")
         acao = (f"Erro: {detalhe}. " if detalhe else "") + \
-            "Detalhes no Dify: Estúdio › app Bot STJ › Logs (menu da esquerda) › clique na conversa."
+            "Veja o nó que falhou em Diagnóstico (link abaixo) ou no Dify: Estúdio › Bot STJ › Logs."
     elif tipo == "sobrecarga" and agora - erro.get("em", 0) < SOBRECARGA_VALE:
         nome = provedores[erro["provedor"]]["nome"] if erro.get("provedor") in provedores else "provedor de IA"
         cls, titulo = "warn", f"Robô instável: o {nome} está sobrecarregado."
@@ -298,6 +310,63 @@ async def teste_tribunal(numero: str = Form(...), token: str = Form(""), vezes: 
     except httpx.HTTPError:
         resultados.append({"status": None, "resposta": "A API do tribunal simulada não respondeu. Confira o item 1 do painel."})
     return resultados
+
+
+def fim_do_arquivo(nome: str, linhas: int = 40) -> str:
+    try:
+        return "".join((CONFIG / nome).read_text(encoding="utf-8", errors="replace").splitlines(True)[-linhas:])
+    except OSError:
+        return ""
+
+
+async def execucoes_no_dify() -> dict:
+    """Últimas execuções do Bot STJ no Dify (as mesmas da tela Logs) e, nas que falharam, o erro de cada nó."""
+    app_id = ler("dify.json").get("app_id")
+    if not app_id:
+        return {"erro": "O painel não sabe o app_id do Bot STJ (chave colada à mão). Veja os Logs no próprio Dify."}
+    try:
+        async with httpx.AsyncClient(timeout=15) as h:
+            cab = await entrar_no_dify(h)
+            base = f"{URL['dify']}/console/api/apps/{app_id}"
+            r = await h.get(base + "/advanced-chat/workflow-runs", headers=cab,
+                            params={"limit": 10, "triggered_from": "app-run"})
+            r.raise_for_status()
+            execucoes = []
+            for run in r.json().get("data", []):
+                item = {k: run.get(k) for k in ("id", "status", "elapsed_time", "total_tokens", "created_at")}
+                if run.get("status") != "succeeded":
+                    d = await h.get(f"{base}/workflow-runs/{run['id']}", headers=cab)
+                    item["erro"] = d.json().get("error") if d.is_success else None
+                    n = await h.get(f"{base}/workflow-runs/{run['id']}/node-executions", headers=cab)
+                    item["nos"] = [{"titulo": x.get("title"), "tipo": x.get("node_type"), "status": x.get("status"),
+                                    "erro": x.get("error"), "segundos": x.get("elapsed_time"),
+                                    "modelo": ((x.get("process_data") or {}).get("model_name")
+                                               or ((x.get("inputs") or {}).get("model") if isinstance(x.get("inputs"), dict) else None))}
+                                   for x in (n.json().get("data", []) if n.is_success else [])]
+                execucoes.append(item)
+            return {"execucoes": execucoes}
+    except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError) as e:
+        return {"erro": f"Não consegui ler os Logs do Dify ({type(e).__name__}). Veja em Estúdio › Bot STJ › Logs."}
+
+
+@app.get("/api/diagnostico")
+async def diagnostico():
+    robo = ler("robo.json")
+    return {
+        "agora": time.time(),
+        "robo": {k: robo.get(k) for k in ("ok_em", "recebida_em", "erro", "limites")},
+        "historico": robo.get("historico") or [],
+        "dify": await execucoes_no_dify(),
+        "provedores": contas["provedores"] or await provedores_de_ia(),
+        "atualizacao": ler("atualizacao.json"),
+        "inicio_log": fim_do_arquivo("inicio.log"),
+        "conhecimento_log": fim_do_arquivo("conhecimento.log", 20),
+    }
+
+
+@app.get("/diagnostico", response_class=HTMLResponse)
+def pagina_de_diagnostico():
+    return (STATIC / "diagnostico.html").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------------------------
