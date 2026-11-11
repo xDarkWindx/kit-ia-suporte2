@@ -99,6 +99,10 @@
     <li>"ATENDENTE" (a conversa aparece como Aberta no Chatwoot)</li>
   </ol>
   <div class="msg" id="mchat" role="status">Carregando o balão do chat...</div>
+  <div class="acoes" id="chat-acoes" hidden>
+    <button type="button" class="sec" id="chat-nova">Nova conversa</button>
+    <p class="ajuda">Apaga a conversa deste navegador e começa outra do zero, de novo com o robô (útil depois de um erro ou de passar para um atendente). A conversa antiga continua no Chatwoot.</p>
+  </div>
   <p id="chat-aba" hidden><a class="botao" id="chat-aba-link" target="_blank" rel="noopener">Abrir o chat em outra aba</a></p>
 </section>
 
@@ -181,6 +185,7 @@ function abrirBalao(token) {
     if (chat.fase !== "abrindo") return;
     if (balaoNaTela()) {
       chat.fase = "pronto"; chatEmOutraAba(token, false);
+      document.getElementById("chat-acoes").hidden = false;
       return avisoChat("ok", "Balão do chat pronto: clique nele, no canto inferior direito.");
     }
     if (Date.now() - inicio > ESPERA_BALAO) return falhou(token, "balao");
@@ -205,6 +210,13 @@ function carregarChat(token) {
   };
   document.body.appendChild(g);
 }
+
+document.getElementById("chat-nova").addEventListener("click", () => {
+  if (!window.$chatwoot || !window.$chatwoot.reset) return;
+  window.$chatwoot.reset();  // fecha o balão, apaga o cookie da conversa e recarrega o chat zerado
+  avisoChat("ok", "Nova conversa pronta: abra o balão e mande uma mensagem.");
+  setTimeout(() => { try { window.$chatwoot.toggle("open"); } catch (e) {} }, 1500);
+});
 
 function situacaoDoChat(s) {  // chamada a cada 5 s com o /api/status
   if (chat.fase === "pronto") return;
