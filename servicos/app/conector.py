@@ -72,7 +72,16 @@ def diagnosticar(status: int, corpo: str) -> dict:
         return {"tipo": "conta", "em": agora}
     if re.search(r"NOT_FOUND|model_not_found|decommissioned", corpo, re.I):
         return {"tipo": "modelo", "em": agora}
-    return {"tipo": "outro", "em": agora}
+    return {"tipo": "outro", "em": agora, "detalhe": detalhe_do_erro(corpo)}
+
+
+def detalhe_do_erro(corpo: str) -> str:
+    """A mensagem que o Dify devolveu, curta, para o painel mostrar sem precisar abrir os Logs."""
+    try:
+        texto = json.loads(corpo).get("message") or corpo
+    except (ValueError, AttributeError):
+        texto = corpo
+    return " ".join(str(texto).split())[:300]
 
 
 async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, texto: str, usuario: str) -> httpx.Response:
@@ -99,7 +108,7 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
             anotar(ok_em=agora, erro=None, limites=limites)
             return r
         erro = diagnosticar(r.status_code, r.text)
-        if m := re.search(r"gemini|groq", r.text, re.I):
+        if m := re.search(r"gemini|groq|nvidia_nim", r.text, re.I):
             erro["provedor"] = m.group(0).lower()
         espera = 3 if erro["tipo"] == "sobrecarga" else (erro.get("volta_em") or float("inf")) - time.time()
         if espera > ESPERA_CURTA or tentativa == TENTATIVAS - 1:

@@ -220,7 +220,9 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
         acao = "Confira se o Dify está OK na lista acima."
     elif tipo == "outro":
         cls, titulo = "bad", "A última pergunta ao robô falhou."
-        acao = "Veja o erro em Logs, no app Bot STJ do Dify."
+        detalhe = (erro.get("detalhe") or "").replace("{", "(").replace("}", ")")
+        acao = (f"Erro: {detalhe}. " if detalhe else "") + \
+            "Detalhes no Dify: Estúdio › app Bot STJ › Logs (menu da esquerda) › clique na conversa."
     elif tipo == "sobrecarga" and agora - erro.get("em", 0) < SOBRECARGA_VALE:
         nome = provedores[erro["provedor"]]["nome"] if erro.get("provedor") in provedores else "provedor de IA"
         cls, titulo = "warn", f"Robô instável: o {nome} está sobrecarregado."
