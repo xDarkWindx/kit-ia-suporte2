@@ -84,11 +84,13 @@ def diagnosticar(status: int, corpo: str) -> dict:
         return {"tipo": "sobrecarga", "em": agora}
     if re.search(r"API_KEY_INVALID|invalid_api_key|PERMISSION_DENIED|UNAUTHENTICATED|credential|not configured", corpo, re.I):
         return {"tipo": "conta", "em": agora}
-    if re.search(r"could not find json block|Invalid JSON|parse.*json", corpo, re.I):
+    if re.search(r"NOT_FOUND|model_not_found|decommissioned|does not exist", corpo, re.I):
+        return {"tipo": "modelo", "em": agora, "detalhe": detalhe_do_erro(corpo)}
+    # Só as mensagens exatas do Dify (graphon/utils/json_in_md_parser.py): "parse" e "json" soltos aparecem
+    # em qualquer traceback de plugin e confundiam um modelo inexistente com este caso.
+    if re.search(r"could not find json block|got invalid json object|got invalid return object", corpo, re.I):
         # classificador/extrator do Dify: o modelo não devolveu o JSON pedido (comum em modelos que "pensam")
         return {"tipo": "json", "em": agora, "detalhe": detalhe_do_erro(corpo)}
-    if re.search(r"NOT_FOUND|model_not_found|decommissioned", corpo, re.I):
-        return {"tipo": "modelo", "em": agora}
     return {"tipo": "outro", "em": agora, "detalhe": detalhe_do_erro(corpo)}
 
 

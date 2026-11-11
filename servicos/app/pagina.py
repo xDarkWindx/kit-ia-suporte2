@@ -621,6 +621,10 @@ async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: st
                     msg = r.json().get("message") or r.text
                 except ValueError:
                     msg = r.text
+                if re.search(r"model_not_found|does not exist|decommissioned", msg, re.I):
+                    return {**base, "erro": "Este modelo não existe mais no provedor (foi retirado ou a conta não tem "
+                                            "acesso). O Dify ainda o lista porque a lista vem do plugin.",
+                            "detalhe": msg[:1000]}
                 return {**base, "erro": f"O modelo recusou a chamada (HTTP {r.status_code}): {msg[:1000]}"}
             dados = r.json()
             texto = dados.get("answer", "")

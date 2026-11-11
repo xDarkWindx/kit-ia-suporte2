@@ -182,7 +182,8 @@ document.getElementById("freproduzir").addEventListener("submit", async ev => {
     const topo = r.modelo ? `<div class="topo"><b>${esc(r.no)}</b><span>${esc(r.modelo)}</span><span>${seg(r.segundos)}</span>` +
       (r.uso ? `<span>${r.uso.prompt_tokens ?? "?"} tokens de entrada, ${r.uso.completion_tokens ?? "?"} de saída</span>` : "") + `</div>` +
       `<div class="rotulo">Parâmetros do modelo: ${esc(JSON.stringify(r.parametros))}</div>` : "";
-    if (r.erro) { out.innerHTML = `<div class="linha bad">${topo}<div class="erro">${esc(r.erro)}</div></div>`; return; }
+    if (r.erro) { out.innerHTML = `<div class="linha bad">${topo}<div class="erro">${esc(r.erro)}</div>` +
+      (r.detalhe ? `<details><summary>Mensagem do provedor</summary><pre>${esc(r.detalhe)}</pre></details>` : "") + `</div>`; return; }
     out.innerHTML = `<div class="linha ${r.veredito ? "bad" : "ok"}">${topo}` +
       `<div class="rotulo">Resposta crua do modelo (exatamente como veio)</div>` +
       `<pre>${r.texto ? esc(r.texto) : "(vazia: o modelo não devolveu nenhum texto)"}</pre>` +
@@ -231,7 +232,7 @@ document.getElementById("comparar").addEventListener("click", async ev => {
       `<details open><summary>Cada resposta, exatamente como veio</summary>` + linhas.map(l =>
         `<div class="linha ${l.cls}"><div class="topo"><b>${esc(l.modelo)}</b><span>"${esc(l.q)}"</span><span>${seg(l.segundos)}</span>` +
         (l.categoria ? `<span>categoria: <b>${esc(l.categoria)}</b>${l.esperado ? (l.categoria === l.esperado ? " ✓" : " ✗ (esperado " + esc(l.esperado) + ")") : ""}</span>` : "") + `</div>` +
-        (l.erro ? `<div class="erro">${esc(l.erro)}</div>` :
+        (l.erro ? `<div class="erro">${esc(l.erro)}</div>` + (l.detalhe ? `<details><summary>Mensagem do provedor</summary><pre>${esc(l.detalhe)}</pre></details>` : "") :
           `<pre>${l.texto ? esc(l.texto) : "(vazia: o modelo não devolveu nenhum texto)"}</pre>` +
           (l.veredito ? `<div class="erro">O Dify recusaria: ${esc(l.veredito)}</div>` : "")) + `</div>`).join("") + `</details>`;
   };
