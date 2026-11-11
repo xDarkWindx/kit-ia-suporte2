@@ -522,6 +522,9 @@ async def preparar_app_de_diagnostico(h: httpx.AsyncClient, cab: dict, dsl: dict
     diag = ler("diagnostico.json")
     app_id, chave = diag.get("app_id"), diag.get("chave")
     base = f"{URL['dify']}/console/api/apps"
+    assinatura = json.dumps(dsl["workflow"]["graph"], sort_keys=True, ensure_ascii=False)
+    if app_id and chave and diag.get("assinatura") == assinatura:
+        return chave  # mesmo modelo e mesmas mensagens do teste anterior: já está publicado
     if app_id and chave and (r := await h.get(f"{base}/{app_id}/workflows/draft", headers=cab)).is_success:
         rascunho = r.json()
         (await h.post(f"{base}/{app_id}/workflows/draft", headers=cab,
@@ -540,15 +543,45 @@ async def preparar_app_de_diagnostico(h: httpx.AsyncClient, cab: dict, dsl: dict
         r = await h.post(f"{base}/{app_id}/api-keys", headers=cab)
         r.raise_for_status()
         chave = r.json()["token"]
-        (CONFIG / "diagnostico.json").write_text(json.dumps({"app_id": app_id, "chave": chave}), encoding="utf-8")
     (await h.post(f"{base}/{app_id}/workflows/publish", headers=cab,
                   json={"marked_name": "Painel do kit", "marked_comment": ""})).raise_for_status()
+    (CONFIG / "diagnostico.json").write_text(json.dumps({"app_id": app_id, "chave": chave, "assinatura": assinatura}),
+                                             encoding="utf-8")
     return chave
 
 
+@app.get("/api/diagnostico/modelos")
+async def modelos_disponiveis():
+    """Modelos de texto (LLM) das contas conectadas no Dify, para o comparador da página de diagnóstico."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as h:
+            cab = await entrar_no_dify(h)
+            r = await h.get(f"{URL['dify']}/console/api/workspaces/current/models/model-types/llm", headers=cab)
+            r.raise_for_status()
+            atual = {}
+            if app_id := ler("dify.json").get("app_id"):
+                p = await h.get(f"{URL['dify']}/console/api/apps/{app_id}/workflows/publish", headers=cab)
+                if p.is_success:
+                    no = next((n for n in p.json()["graph"]["nodes"] if n["data"].get("type") == "question-classifier"), None)
+                    atual = no["data"]["model"] if no else {}
+    except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError) as e:
+        return JSONResponse({"erro": f"Não consegui listar os modelos no Dify: {type(e).__name__}"}, 502)
+    modelos = []
+    for prov in r.json().get("data", []):
+        if prov.get("status") != "active":
+            continue
+        nome = (prov.get("label") or {}).get("pt_BR") or (prov.get("label") or {}).get("en_US") or prov["provider"]
+        for m in prov.get("models", []):
+            if m.get("status") == "active" and (m.get("model_properties") or {}).get("mode", "chat") == "chat":
+                modelos.append({"provedor": prov["provider"], "provedor_nome": nome, "modelo": m["model"],
+                                "atual": prov["provider"] == atual.get("provider") and m["model"] == atual.get("name")})
+    return {"modelos": modelos}
+
+
 @app.post("/api/diagnostico/classificador")
-async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: str = Form(""), outro_modelo: str = Form("")):
-    """Testa o classificador; opcionalmente sem o reasoning_effort e/ou com outro modelo do mesmo provedor."""
+async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: str = Form(""), outro_modelo: str = Form(""),
+                                   outro_provedor: str = Form("")):
+    """Testa o classificador; opcionalmente sem o reasoning_effort e/ou com outro modelo (de qualquer conta do Dify)."""
     pergunta = pergunta.strip()[:500] or "oi"
     app_id = ler("dify.json").get("app_id")
     if not app_id:
@@ -567,6 +600,13 @@ async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: st
                 parametros.pop("reasoning_effort", None)
             if outro_modelo.strip():
                 modelo["name"] = outro_modelo.strip()
+            if outro_provedor.strip():
+                # Comparador: todos os modelos com os mesmos parâmetros (os do nó podem não valer em outro
+                # provedor). Fica a temperatura do nó e, só no gpt-oss, o reasoning_effort=low que o kit usa nele.
+                modelo["provider"], modelo["mode"] = outro_provedor.strip(), "chat"
+                parametros = {"temperature": parametros.get("temperature", 0.2)}
+                if "gpt-oss" in modelo["name"] and not sem_raciocinio:
+                    parametros["reasoning_effort"] = "low"
             modelo["completion_params"] = parametros
             no = {**no, "data": {**no["data"], "model": modelo}}
             chave = await preparar_app_de_diagnostico(h, cab, app_de_diagnostico(no))
@@ -584,8 +624,10 @@ async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: st
                 return {**base, "erro": f"O modelo recusou a chamada (HTTP {r.status_code}): {msg[:1000]}"}
             dados = r.json()
             texto = dados.get("answer", "")
+            sem_pensamento = re.sub(r"<think[^>]*>[\s\S]*?</think>", "", texto, flags=re.I)
+            categoria = re.search(r'"category_id"\s*:\s*"([^"]+)"', sem_pensamento)
             return {**base, "texto": texto, "uso": (dados.get("metadata") or {}).get("usage"),
-                    "veredito": acha_json_como_o_dify(texto)}
+                    "veredito": acha_json_como_o_dify(texto), "categoria": categoria.group(1) if categoria else None}
     except (OSError, ValueError, KeyError, TypeError, StopIteration, httpx.HTTPError) as e:
         return JSONResponse({"erro": f"Não consegui reproduzir no Dify: {type(e).__name__}: {e}"[:600]}, 502)
 

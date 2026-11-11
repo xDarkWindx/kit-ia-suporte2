@@ -26,6 +26,14 @@
   .vazio { color:var(--muted); }
   form { display:flex; flex-wrap:wrap; gap:8px; }
   input[type=text] { flex:1 1 240px; font:inherit; padding:8px 10px; border:1px solid #c9c2b2; border-radius:6px; }
+  textarea { width:100%; font:inherit; font-size:14px; padding:8px 10px; border:1px solid #c9c2b2; border-radius:6px; margin-top:4px; }
+  .grade-modelos { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:4px 12px; margin-top:10px; }
+  .grade-modelos label { display:flex; gap:6px; align-items:flex-start; font-size:14px; overflow-wrap:anywhere; }
+  .grade-modelos .prov { grid-column:1/-1; font-weight:700; margin-top:6px; }
+  .tabela { width:100%; overflow-x:auto; margin-top:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.ok { color:var(--ok); font-weight:700; } td.bad { color:var(--bad); font-weight:700; } td.warn { color:var(--warn); font-weight:700; }
   .opcao { display:flex; align-items:center; gap:6px; font-size:14px; flex:1 1 100%; }
   .rotulo { font-size:13px; color:var(--muted); margin-top:8px; }
   .bolha { background:#f2efe8; border-radius:8px; padding:8px 10px; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; }
@@ -55,6 +63,23 @@
     <p class="ajuda" style="margin-top:8px">As opções só valem para este teste: o Bot STJ não muda. Outro modelo precisa estar cadastrado no provedor do Dify.</p>
     <div id="reproducao"></div>
     <div id="dica-vazia"></div>
+  </section>
+  <section>
+    <h2>Comparar modelos no classificador</h2>
+    <p class="ajuda">Manda as mesmas perguntas, do mesmo jeito que o classificador do Bot STJ, para cada modelo marcado
+      (de todas as contas conectadas no Dify) e mostra o que cada um respondeu. Todos com os mesmos parâmetros: a
+      temperatura do nó e, só no gpt-oss, reasoning_effort=low. O Bot STJ não muda. Cada pergunta gasta cota.</p>
+    <button type="button" class="sec" id="carregar-modelos">Listar meus modelos</button>
+    <div id="lista-modelos"></div>
+    <div id="comparar-form" hidden>
+      <div class="rotulo">Perguntas (uma por linha) e a categoria que o Bot STJ deveria escolher, depois de "=&gt;"</div>
+      <textarea id="perguntas" rows="5">oi =&gt; saudacao
+como emito uma certidão? =&gt; servicos
+me passa uma receita de pudim =&gt; fora
+quero falar com uma pessoa =&gt; atendente</textarea>
+      <div class="acoes"><button type="button" id="comparar">Comparar</button> <span id="comparar-status" class="ajuda"></span></div>
+    </div>
+    <div id="comparacao"></div>
   </section>
   <section>
     <h2>Execuções no Dify</h2>
@@ -167,6 +192,67 @@ document.getElementById("freproduzir").addEventListener("submit", async ev => {
         : "O classificador do Dify aceitaria esta resposta."}</div></div>`;
   } catch (e) { out.innerHTML = `<div class="linha bad">Não consegui falar com o painel.</div>`; }
   finally { bt.disabled = false; }
+});
+// ---- Comparador de modelos ----
+let modelosDisponiveis = [];
+document.getElementById("carregar-modelos").addEventListener("click", async ev => {
+  const lista = document.getElementById("lista-modelos");
+  ev.target.disabled = true; lista.innerHTML = `<p class="ajuda">Perguntando ao Dify...</p>`;
+  try {
+    const r = await (await fetch("/api/diagnostico/modelos")).json();
+    if (r.erro) { lista.innerHTML = `<div class="linha bad">${esc(r.erro)}</div>`; return; }
+    modelosDisponiveis = r.modelos;
+    if (!r.modelos.length) { lista.innerHTML = `<div class="linha warn">Nenhuma conta de IA conectada no Dify.</div>`; return; }
+    let prov = "";
+    lista.innerHTML = `<div class="grade-modelos">` + r.modelos.map((m, i) => {
+      const titulo = m.provedor_nome !== prov ? `<div class="prov">${esc(prov = m.provedor_nome)}</div>` : "";
+      return titulo + `<label><input type="checkbox" value="${i}"${m.atual ? " checked" : ""}> ${esc(m.modelo)}${m.atual ? " <b>(no classificador agora)</b>" : ""}</label>`;
+    }).join("") + `</div>`;
+    document.getElementById("comparar-form").hidden = false;
+  } catch (e) { lista.innerHTML = `<div class="linha bad">Não consegui falar com o painel.</div>`; }
+  finally { ev.target.disabled = false; }
+});
+
+document.getElementById("comparar").addEventListener("click", async ev => {
+  const marcados = [...document.querySelectorAll("#lista-modelos input:checked")].map(c => modelosDisponiveis[+c.value]);
+  const perguntas = document.getElementById("perguntas").value.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => { const [q, cat] = l.split("=>"); return {q: q.trim(), esperado: (cat || "").trim()}; });
+  const st = document.getElementById("comparar-status"), out = document.getElementById("comparacao");
+  if (!marcados.length || !perguntas.length) { st.textContent = "Marque ao menos um modelo e escreva ao menos uma pergunta."; return; }
+  ev.target.disabled = true;
+  const linhas = [], resumo = {};
+  const desenhar = () => {
+    out.innerHTML = `<div class="tabela"><table><thead><tr><th>Modelo</th><th>Aceitas pelo Dify</th><th>Categoria certa</th><th>Tempo médio</th></tr></thead><tbody>` +
+      Object.entries(resumo).map(([k, r]) => {
+        const cls = r.aceitas === r.total ? "ok" : (r.aceitas ? "warn" : "bad");
+        return `<tr><td>${esc(k)}</td><td class="${cls}">${r.aceitas}/${r.total}</td>` +
+          `<td>${r.comEsperado ? r.certas + "/" + r.comEsperado : "—"}</td><td>${r.total ? (r.tempo / r.total).toFixed(1) + " s" : ""}</td></tr>`;
+      }).join("") + `</tbody></table></div>` +
+      `<details open><summary>Cada resposta, exatamente como veio</summary>` + linhas.map(l =>
+        `<div class="linha ${l.cls}"><div class="topo"><b>${esc(l.modelo)}</b><span>"${esc(l.q)}"</span><span>${seg(l.segundos)}</span>` +
+        (l.categoria ? `<span>categoria: <b>${esc(l.categoria)}</b>${l.esperado ? (l.categoria === l.esperado ? " ✓" : " ✗ (esperado " + esc(l.esperado) + ")") : ""}</span>` : "") + `</div>` +
+        (l.erro ? `<div class="erro">${esc(l.erro)}</div>` :
+          `<pre>${l.texto ? esc(l.texto) : "(vazia: o modelo não devolveu nenhum texto)"}</pre>` +
+          (l.veredito ? `<div class="erro">O Dify recusaria: ${esc(l.veredito)}</div>` : "")) + `</div>`).join("") + `</details>`;
+  };
+  let feitos = 0; const total = marcados.length * perguntas.length;
+  for (const m of marcados) {
+    const chave = `${m.modelo} (${m.provedor_nome})`;
+    resumo[chave] = {aceitas: 0, total: 0, certas: 0, comEsperado: 0, tempo: 0};
+    for (const p of perguntas) {
+      st.textContent = `Testando ${++feitos} de ${total}: ${m.modelo}...`;
+      const f = new FormData(); f.append("pergunta", p.q); f.append("outro_modelo", m.modelo); f.append("outro_provedor", m.provedor);
+      let r;
+      try { r = await (await fetch("/api/diagnostico/classificador", {method: "POST", body: f})).json(); }
+      catch (e) { r = {erro: "O painel não respondeu."}; }
+      const aceita = !r.erro && !r.veredito, rs = resumo[chave];
+      rs.total++; rs.tempo += r.segundos || 0; if (aceita) rs.aceitas++;
+      if (p.esperado) { rs.comEsperado++; if (aceita && r.categoria === p.esperado) rs.certas++; }
+      linhas.push({modelo: chave, q: p.q, esperado: p.esperado, ...r, cls: r.erro ? "bad" : (aceita ? (p.esperado && r.categoria !== p.esperado ? "warn" : "ok") : "bad")});
+      desenhar();
+    }
+  }
+  st.textContent = `Pronto: ${total} perguntas.`; ev.target.disabled = false;
 });
 document.getElementById("atualizar").addEventListener("click", carregar);
 carregar();
