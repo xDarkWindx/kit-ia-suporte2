@@ -26,6 +26,7 @@
   .vazio { color:var(--muted); }
   form { display:flex; flex-wrap:wrap; gap:8px; }
   input[type=text] { flex:1 1 240px; font:inherit; padding:8px 10px; border:1px solid #c9c2b2; border-radius:6px; }
+  .opcao { display:flex; align-items:center; gap:6px; font-size:14px; flex:1 1 100%; }
   .rotulo { font-size:13px; color:var(--muted); margin-top:8px; }
   .bolha { background:#f2efe8; border-radius:8px; padding:8px 10px; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; }
 </style>
@@ -48,8 +49,12 @@
     <form id="freproduzir">
       <input type="text" id="pergunta" name="pergunta" value="oi" aria-label="Pergunta de teste">
       <button type="submit">Perguntar ao modelo</button>
+      <label class="opcao"><input type="checkbox" name="sem_raciocinio" value="1"> sem o parâmetro reasoning_effort</label>
+      <input type="text" name="outro_modelo" placeholder="outro modelo do mesmo provedor (opcional), ex.: nvidia/llama-3.1-nemotron-70b-instruct" aria-label="Outro modelo">
     </form>
+    <p class="ajuda" style="margin-top:8px">As opções só valem para este teste: o Bot STJ não muda. Outro modelo precisa estar cadastrado no provedor do Dify.</p>
     <div id="reproducao"></div>
+    <div id="dica-vazia"></div>
   </section>
   <section>
     <h2>Execuções no Dify</h2>
@@ -156,6 +161,7 @@ document.getElementById("freproduzir").addEventListener("submit", async ev => {
     out.innerHTML = `<div class="linha ${r.veredito ? "bad" : "ok"}">${topo}` +
       `<div class="rotulo">Resposta crua do modelo (exatamente como veio)</div>` +
       `<pre>${r.texto ? esc(r.texto) : "(vazia: o modelo não devolveu nenhum texto)"}</pre>` +
+      (!r.texto ? `<div style="margin-top:6px">Resposta vazia: o modelo terminou sem escrever nada. Teste de novo marcando "sem o parâmetro reasoning_effort"; se continuar vazia, teste outro modelo.</div>` : "") +
       `<div class="${r.veredito ? "erro" : ""}" style="margin-top:6px">${r.veredito
         ? "O classificador do Dify recusaria esta resposta: " + esc(r.veredito)
         : "O classificador do Dify aceitaria esta resposta."}</div></div>`;

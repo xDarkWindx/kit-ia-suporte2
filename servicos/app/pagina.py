@@ -547,7 +547,8 @@ async def preparar_app_de_diagnostico(h: httpx.AsyncClient, cab: dict, dsl: dict
 
 
 @app.post("/api/diagnostico/classificador")
-async def reproduzir_classificador(pergunta: str = Form(...)):
+async def reproduzir_classificador(pergunta: str = Form(...), sem_raciocinio: str = Form(""), outro_modelo: str = Form("")):
+    """Testa o classificador; opcionalmente sem o reasoning_effort e/ou com outro modelo do mesmo provedor."""
     pergunta = pergunta.strip()[:500] or "oi"
     app_id = ler("dify.json").get("app_id")
     if not app_id:
@@ -560,11 +561,18 @@ async def reproduzir_classificador(pergunta: str = Form(...)):
             no = next((n for n in r.json()["graph"]["nodes"] if n["data"].get("type") == "question-classifier"), None)
             if not no:
                 return JSONResponse({"erro": "O Bot STJ publicado não tem nó classificador."}, 400)
+            modelo = dict(no["data"]["model"])  # cópia: o Bot STJ não é alterado
+            parametros = dict(modelo.get("completion_params") or {})
+            if sem_raciocinio:
+                parametros.pop("reasoning_effort", None)
+            if outro_modelo.strip():
+                modelo["name"] = outro_modelo.strip()
+            modelo["completion_params"] = parametros
+            no = {**no, "data": {**no["data"], "model": modelo}}
             chave = await preparar_app_de_diagnostico(h, cab, app_de_diagnostico(no))
             inicio = time.time()
             r = await h.post(f"{URL['dify']}/v1/chat-messages", headers={"Authorization": f"Bearer {chave}"},
                              json={"inputs": {}, "query": pergunta, "response_mode": "blocking", "user": "painel-diagnostico"})
-            modelo = no["data"]["model"]
             base = {"no": no["data"].get("title"), "modelo": modelo.get("name"), "provedor": modelo.get("provider"),
                     "parametros": modelo.get("completion_params") or {}, "pergunta": pergunta,
                     "segundos": round(time.time() - inicio, 1)}
