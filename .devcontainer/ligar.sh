@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Liga o laboratório sempre que o Codespace abre. Na primeira vez também configura tudo.
+cd "$(dirname "$0")/.." || exit 1
+mkdir -p config
+exec > >(tee -a config/inicio.log) 2>&1
+echo "== Ligando o laboratório do Chatbot STJ =="
+
+# Traz a versão nova do kit; se este script mudou, recomeça usando o novo
+if [ -z "$KIT_ATUALIZADO" ]; then
+  antes="$(git rev-parse HEAD)"
+  bash .devcontainer/atualizar.sh
+  if [ "$(git rev-parse HEAD)" != "$antes" ]; then
+    export KIT_ATUALIZADO=1
+    exec bash .devcontainer/ligar.sh
+  fi
+fi
+
+for i in $(seq 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
+
+DOM="${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
+if [ -n "$CODESPACE_NAME" ]; then
+  export PUB_PAINEL="https://${CODESPACE_NAME}-8080.${DOM}"
+  export PUB_DIFY="https://${CODESPACE_NAME}-8081.${DOM}"
+  export PUB_CHATWOOT="https://${CODESPACE_NAME}-3000.${DOM}"
+else
+  export PUB_PAINEL="http://localhost:8080" PUB_DIFY="http://localhost:8081" PUB_CHATWOOT="http://localhost:3000"
+fi
+export KIT_EMAIL="equipe@suporte-lab.com.br"
+
+# Arquivos .env (não vão para o git): cria a partir dos modelos, com chaves exclusivas
+bash .devcontainer/preparar.sh
+
+# Primeira vez: senha exclusiva deste ambiente
+[ -f config/.senha ] || echo "Stj@$(tr -dc 'a-z0-9' </dev/urandom | head -c 8)7" > config/.senha
+export KIT_SENHA="$(cat config/.senha)"
+sed -i "s#^FRONTEND_URL=.*#FRONTEND_URL=${PUB_CHATWOOT}#" chatwoot/.env
+docker network create kit-rede >/dev/null 2>&1 || true
+
+echo "[1/4] Ligando o Dify..."
+(cd dify && docker compose up -d) || { echo "ERRO ao ligar o Dify. Chame a professora."; exit 1; }
+
+echo "[2/4] Ligando o Chatwoot..."
+cd chatwoot || exit 1
+if [ ! -f ../config/.chatwoot_pronto ]; then
+  echo "      Primeira vez: preparando o banco de dados (alguns minutos)..."
+  docker compose up -d postgres redis
+  sleep 15
+  docker compose run --rm rails bundle exec rails db:chatwoot_prepare || { echo "ERRO ao preparar o banco do Chatwoot."; exit 1; }
+  docker compose run --rm -e KIT_EMAIL -e KIT_SENHA -e PUB_PAINEL rails bundle exec rails runner /kit/seed_kit.rb \
+    || { echo "ERRO ao configurar o Chatwoot."; exit 1; }
+  touch ../config/.chatwoot_pronto
+  touch ../config/.chatwoot_v2
+fi
+docker compose up -d || { echo "ERRO ao ligar o Chatwoot."; exit 1; }
+# Ambientes criados antes: o bot responde primeiro, sem o pedido de e-mail
+if [ ! -f ../config/.chatwoot_v2 ]; then
+  docker compose exec -T rails bundle exec rails runner 'Inbox.where(name: "Chat on-line").update_all(enable_email_collect: false)' >/dev/null 2>&1 \
+    && touch ../config/.chatwoot_v2
+fi
+cd ..
+
+echo "[3/4] Ligando os serviços do kit..."
+(cd servicos && docker compose up -d --build) || { echo "ERRO ao ligar os serviços do kit."; exit 1; }
+
+# O chat do painel precisa enxergar o Chatwoot: porta 3000 pública (só o Chatwoot, que tem login)
+if [ -n "$CODESPACE_NAME" ]; then
+  gh codespace ports visibility 3000:public -c "$CODESPACE_NAME" >/dev/null 2>&1 \
+    || echo "      Aviso: torne a porta 3000 pública na aba PORTAS (botão direito > Visibilidade da porta > Public)."
+fi
+
+echo "[4/4] Configurando o Dify (primeira vez: até 10 minutos)..."
+(cd servicos && docker compose run --rm -e KIT_EMAIL -e KIT_SENHA pagina python configurar_dify.py)
+
+# Conhecimento do Dify: reindexa o que falhou e fica de olho nos modelos de embedding desativados
+setsid nohup bash .devcontainer/corrigir-conhecimento.sh --vigiar >> config/conhecimento.log 2>&1 < /dev/null &
+
+echo
+echo "=============================================================="
+echo " PRONTO! Abra o painel do kit:"
+echo "   ${PUB_PAINEL}"
+echo " (ou: aba PORTAS > linha '1. Painel do kit' > ícone do globo)"
+echo " Login do Dify e do Chatwoot: ${KIT_EMAIL}  senha: ${KIT_SENHA}"
+echo "=============================================================="
