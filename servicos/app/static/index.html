@@ -21,6 +21,10 @@
   .pill { font-weight:700; font-size:13px; }
   .ultima { display:flex; flex-wrap:wrap; gap:4px 18px; margin:-2px 0 10px; padding:8px 12px; background:#f6f3ec; border-radius:8px; font-size:13.5px; color:var(--muted); }
   .ultima b { color:var(--fg); font-weight:600; }
+  .resumo { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; margin-bottom:8px; }
+  .resumo .item { flex-direction:column; justify-content:flex-start; gap:2px; }
+  .resumo .item > span:first-child { font-size:13px; color:var(--muted); }
+  .resumo .item a { font-size:13px; }
   .provs { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; margin-bottom:8px; }
   .prov { border:1px solid var(--line); border-radius:8px; padding:10px 12px; display:grid; gap:6px; align-content:start; min-width:0; }
   .prov .nome { font-size:15px; overflow-wrap:anywhere; }
@@ -68,8 +72,9 @@
   <h3>O robô está respondendo?</h3>
   <div class="aviso warn" id="robo-aviso" role="status"><strong id="robo-titulo">Verificando...</strong><span id="robo-acao"></span></div>
   <div class="ultima" id="robo-ultima" hidden></div>
+  <div class="aviso warn" id="robo-rascunho" hidden></div>
+  <div class="resumo" id="robo-resumo"></div>
   <div class="provs" id="robo-provs"></div>
-  <div class="status" id="robo-itens"></div>
   <div class="acoes">
     <button type="button" class="sec" id="robo-testar">Testar agora</button>
     <a class="botao" href="/diagnostico" target="_blank" rel="noopener">Diagnóstico</a>
@@ -274,6 +279,20 @@ async function atualizarRobo() {
       (u.custo && Number(u.custo) > 0 ? `<span title="Estimativa do Dify com o preço de tabela de cada modelo. Em conta no plano gratuito, sem faturamento ativado, nada é cobrado.">Custo estimado: <b>${esc(u.moeda || "")} ${Number(u.custo).toFixed(5)}</b> (preço de tabela)</span>` : "") +
       `<span>Artigos da base: <b>${u.artigos && u.artigos.length ? u.artigos.map(esc).join(", ") : "nenhum"}</b></span>` +
       `<span>Origem: <b>${esc(u.origem || "")}</b></span>`;
+    const rz = s.rascunho, av = document.getElementById("robo-rascunho");
+    av.hidden = !(rz && rz.pendente);
+    if (rz && rz.pendente) av.innerHTML = `<strong>Há mudanças no Bot STJ que ainda não foram publicadas.</strong>` +
+      `O chat continua usando a versão publicada${rz.publicado_em ? " em " + quando(rz.publicado_em) : ""}. ` +
+      `No Dify, abra o app Bot STJ e clique em Publicar${rz.editado_em ? " (última edição em " + quando(rz.editado_em) + ")" : ""}.`;
+    const rs = s.resumo, fl = s.fila, cel = [];
+    if (rs) cel.push(`<div class="item"><span>Últimas 24 h</span><span><b>${rs.total}</b> perguntas · ` +
+      `<span class="pill ok">${rs.ok} respondidas</span>` + (rs.falhas ? ` · <span class="pill bad">${rs.falhas} com falha</span>` : "") +
+      (rs.media != null ? ` · média ${String(rs.media).replace(".", ",")} s` : "") + `</span></div>`);
+    if (fl) cel.push(`<div class="item"><span>Com atendentes humanos</span><span>` +
+      (fl.abertas ? `<span class="pill warn">${fl.abertas} conversa${fl.abertas > 1 ? "s" : ""} aberta${fl.abertas > 1 ? "s" : ""}</span> · <a href="${esc(fl.link)}" target="_blank" rel="noopener">abrir no Chatwoot</a>`
+                  : `<span class="pill ok">nenhuma esperando</span>`) + `</span></div>`);
+    s.itens.forEach(i => cel.push(`<div class="item"><span>${esc(i.nome)}</span><span class="pill ${esc(i.cls)}">${esc(i.txt)}</span></div>`));
+    document.getElementById("robo-resumo").innerHTML = cel.join("");
     document.getElementById("robo-provs").innerHTML = (s.provedores || []).map(p =>
       `<div class="prov"><strong class="nome">${esc(p.nome)}</strong>` +
       `<div class="estado"><span>Conta</span><span class="pill ${esc(p.conta.cls)}">${esc(p.conta.txt)}</span>` +
@@ -281,8 +300,6 @@ async function atualizarRobo() {
       (p.usos.length ? `<ul>${p.usos.map(x => `<li><span>${esc(x.no)}</span><code>${esc(x.modelo)}</code></li>`).join("")}</ul>`
                      : `<span class="fora">Conectado, mas não usado no robô publicado</span>`) + `</div>`).join("")
       || `<p class="ajuda">Nenhuma conta de IA conectada no Dify.</p>`;
-    document.getElementById("robo-itens").innerHTML = s.itens.map(i =>
-      `<div class="item"><span>${esc(i.nome)}</span><span class="pill ${esc(i.cls)}">${esc(i.txt)}${i.volta_em ? " até " + quando(i.volta_em) : ""}</span></div>`).join("");
   } catch (e) {
     document.getElementById("robo-aviso").className = "aviso warn";
     document.getElementById("robo-titulo").textContent = "Não consegui verificar o robô.";

@@ -29,7 +29,8 @@ app = FastAPI(title="Página do kit")
 STATIC = Path(__file__).parent / "static"
 SOBRECARGA_VALE = 600  # depois de 10 minutos, um erro de sobrecarga já não diz nada
 PROVEDORES = {"groq": "Groq", "gemini": "Gemini"}  # sempre aparecem no painel, mesmo fora de uso
-contas = {"em": 0.0, "provedores": {}, "bloqueio": {"verificado": False, "em": None}, "token": ""}  # última verificação de Dify e Chatwoot
+contas = {"em": 0.0, "provedores": {}, "bloqueio": {"verificado": False, "em": None}, "token": "", "rascunho": None,
+          "fila": None}  # última verificação de Dify e Chatwoot
 
 
 def ler(nome: str) -> dict:
@@ -140,6 +141,58 @@ async def ultimo_bloqueio() -> dict:
         return {"verificado": True, "em": em}
     except (ValueError, KeyError, httpx.HTTPError):
         return {"verificado": False, "em": None}
+
+
+def _essencia(grafo: dict) -> tuple:
+    """O que muda o comportamento do fluxo: dados dos nós e ligações (ignora posição e seleção na tela)."""
+    nos = sorted((n["id"], json.dumps({k: v for k, v in n["data"].items() if k not in ("selected", "desc")},
+                                      sort_keys=True, ensure_ascii=False)) for n in grafo.get("nodes", []))
+    arestas = sorted((e["source"], e.get("sourceHandle"), e["target"]) for e in grafo.get("edges", []))
+    return nos, arestas
+
+
+async def rascunho_pendente() -> dict | None:
+    """Se o rascunho do Bot STJ no Dify tem mudanças que ainda não foram publicadas (o chat usa a versão publicada)."""
+    app_id = ler("dify.json").get("app_id")
+    if not app_id:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as h:
+            cab = await entrar_no_dify(h)
+            base = f"{URL['dify']}/console/api/apps/{app_id}/workflows"
+            rascunho, publicado = await h.get(base + "/draft", headers=cab), await h.get(base + "/publish", headers=cab)
+            rascunho.raise_for_status(); publicado.raise_for_status()
+        r, p = rascunho.json(), publicado.json()
+        mudou = _essencia(r.get("graph") or {}) != _essencia(p.get("graph") or {})
+        return {"pendente": mudou, "editado_em": r.get("updated_at"), "publicado_em": p.get("updated_at") or p.get("created_at")}
+    except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+        return None
+
+
+async def fila_humana() -> dict | None:
+    """Quantas conversas estão abertas (com atendentes humanos) no Chatwoot."""
+    cw = ler("chatwoot.json")
+    try:
+        async with httpx.AsyncClient(timeout=10) as h:
+            cab = {"api_access_token": await token_chatwoot(h, cw)}
+            r = await h.get(f"{URL['chatwoot']}/api/v1/accounts/{cw.get('account_id')}/conversations/meta",
+                            headers=cab, params={"status": "open"})
+            r.raise_for_status()
+        meta = r.json().get("meta") or {}
+        pub = os.environ.get("PUB_CHATWOOT", "http://localhost:3000")
+        return {"abertas": meta.get("all_count", 0), "sem_responsavel": meta.get("unassigned_count", 0),
+                "link": f"{pub}/app/accounts/{cw.get('account_id')}/dashboard"}
+    except (ValueError, KeyError, TypeError, httpx.HTTPError):
+        return None
+
+
+def resumo_24h(robo: dict) -> dict | None:
+    eventos = [e for e in robo.get("eventos") or [] if e[0] > time.time() - 86400]
+    if not eventos:
+        return None
+    ok = [e for e in eventos if e[1]]
+    return {"total": len(eventos), "ok": len(ok), "falhas": len(eventos) - len(ok),
+            "media": round(sum(e[2] for e in ok) / len(ok), 1) if ok else None}
 
 
 def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
@@ -262,8 +315,11 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
 async def robo():
     # O painel chama a cada 5 s, mas Dify e Chatwoot só são consultados a cada 30 s (exige login)
     if time.time() - contas["em"] > 30 or not contas["provedores"]:
-        contas.update(em=time.time(), provedores=await provedores_de_ia(), bloqueio=await ultimo_bloqueio())
-    return situacao_do_robo(ler("robo.json"), contas["provedores"], contas["bloqueio"])
+        contas.update(em=time.time(), provedores=await provedores_de_ia(), bloqueio=await ultimo_bloqueio(),
+                      rascunho=await rascunho_pendente(), fila=await fila_humana())
+    robo_json = ler("robo.json")
+    return situacao_do_robo(robo_json, contas["provedores"], contas["bloqueio"]) | {
+        "rascunho": contas["rascunho"], "fila": contas["fila"], "resumo": resumo_24h(robo_json)}
 
 
 @app.post("/api/robo/testar")

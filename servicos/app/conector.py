@@ -56,7 +56,10 @@ def registrar(usuario: str, inicio: float, ok: bool, status: int | None = None, 
     if erro:
         item |= {"tipo": erro.get("tipo"), "provedor": erro.get("provedor"),
                  "detalhe": erro.get("detalhe") or detalhe_do_erro(corpo), "corpo": corpo[:2000]}
-    anotar(historico=([item] + (ler("robo.json").get("historico") or []))[:HISTORICO])
+    robo = ler("robo.json")
+    # Para o resumo das últimas 24 h do painel: só hora, resultado e tempo (leve, guarda até 500)
+    eventos = [e for e in robo.get("eventos") or [] if e[0] > time.time() - 86400][-499:] + [[inicio, ok, item["segundos"]]]
+    anotar(historico=([item] + (robo.get("historico") or []))[:HISTORICO], eventos=eventos)
 
 
 def segundos_de_espera(corpo: str) -> int | None:
