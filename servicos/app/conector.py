@@ -126,11 +126,19 @@ async def consultar(http: httpx.AsyncClient, chave: str, conversa_dify: str, tex
             agora = time.time()
             limites = {k: v for k, v in (ler("robo.json").get("limites") or {}).items()
                        if v.get("volta_em") is None or v["volta_em"] > agora}  # os vencidos já renovaram
-            anotar(ok_em=agora, erro=None, limites=limites)
             try:
-                resposta = str(r.json().get("answer", ""))
+                dados = r.json()
             except ValueError:
-                resposta = r.text
+                dados = {}
+            meta = dados.get("metadata") or {}
+            uso = meta.get("usage") or {}
+            # o que o painel mostra em "Última resposta da IA": tokens, tempo, custo e artigos da base usados
+            anotar(ok_em=agora, erro=None, limites=limites, ultima={
+                "segundos": round(agora - inicio, 1), "origem": usuario,
+                "tokens_entrada": uso.get("prompt_tokens"), "tokens_saida": uso.get("completion_tokens"),
+                "tokens": uso.get("total_tokens"), "custo": uso.get("total_price"), "moeda": uso.get("currency"),
+                "artigos": [a.get("document_name") for a in meta.get("retriever_resources") or [] if a.get("document_name")][:5]})
+            resposta = str(dados.get("answer", "")) if dados else r.text
             registrar(usuario, inicio, True, r.status_code, pergunta=texto, resposta=resposta)
             return r
         erro = diagnosticar(r.status_code, r.text)

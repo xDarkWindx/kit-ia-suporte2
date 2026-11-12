@@ -19,6 +19,18 @@
   .status { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; }
   .item { border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:8px; }
   .pill { font-weight:700; font-size:13px; }
+  .ultima { display:flex; flex-wrap:wrap; gap:4px 18px; margin:-2px 0 10px; padding:8px 12px; background:#f6f3ec; border-radius:8px; font-size:13.5px; color:var(--muted); }
+  .ultima b { color:var(--fg); font-weight:600; }
+  .provs { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; margin-bottom:8px; }
+  .prov { border:1px solid var(--line); border-radius:8px; padding:10px 12px; display:grid; gap:6px; align-content:start; min-width:0; }
+  .prov .nome { font-size:15px; overflow-wrap:anywhere; }
+  .prov .estado { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px; color:var(--muted); align-items:baseline; }
+  .prov .estado .pill { text-align:left; }
+  .prov ul { margin:0; padding:6px 0 0; list-style:none; border-top:1px solid var(--line); font-size:13px; display:grid; gap:3px; }
+  .prov li { display:grid; gap:0; }
+  .prov li span { color:var(--muted); font-size:12px; }
+  .prov li code { font-size:12px; overflow-wrap:anywhere; background:none; padding:0; }
+  .prov .fora { font-size:13px; color:var(--muted); padding-top:6px; border-top:1px solid var(--line); }
   .pill.ok { color:var(--ok); } .pill.bad { color:var(--bad); } .pill.warn { color:var(--warn); }
   .links { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
   a.botao, button { display:inline-block; background:var(--gold); color:#fff; border:0; border-radius:8px; padding:9px 14px; font-size:14px; font-weight:600; text-decoration:none; cursor:pointer; }
@@ -27,7 +39,8 @@
   code, .cred { background:#f2efe8; border-radius:4px; padding:1px 6px; font-family: Consolas, "Ubuntu Mono", monospace; }
   form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   input, select, textarea { font:inherit; padding:8px 10px; border:1px solid #c9c2b2; border-radius:6px; background:#fff; }
-  input[type=text] { flex:1 1 320px; }
+  input[type=text] { flex:1 1 320px; min-width:0; }
+  section { min-width:0; } input, select, textarea, button { max-width:100%; }
   textarea { width:100%; min-height:60px; }
   pre { background:#26282c; color:#f2efe8; padding:10px 12px; border-radius:8px; overflow-x:auto; font-size:13px; margin:10px 0 0; white-space:pre-wrap; }
   .msg { margin-top:8px; font-weight:600; }
@@ -54,6 +67,8 @@
 
   <h3>O robô está respondendo?</h3>
   <div class="aviso warn" id="robo-aviso" role="status"><strong id="robo-titulo">Verificando...</strong><span id="robo-acao"></span></div>
+  <div class="ultima" id="robo-ultima" hidden></div>
+  <div class="provs" id="robo-provs"></div>
   <div class="status" id="robo-itens"></div>
   <div class="acoes">
     <button type="button" class="sec" id="robo-testar">Testar agora</button>
@@ -252,6 +267,20 @@ async function atualizarRobo() {
     document.getElementById("robo-titulo").textContent = s.titulo;
     document.getElementById("robo-acao").textContent = s.acao
       .replace("{hora}", s.volta_em ? quando(s.volta_em) : "").replace("{ok}", s.ok_em ? quando(s.ok_em) : "");
+    const u = s.ultima, fmt = n => n == null ? "?" : Number(n).toLocaleString("pt-BR");
+    const ul = document.getElementById("robo-ultima"); ul.hidden = !u;
+    if (u) ul.innerHTML = `<span>Tokens: <b>${fmt(u.tokens)}</b> (${fmt(u.tokens_entrada)} enviados, ${fmt(u.tokens_saida)} recebidos)</span>` +
+      `<span>Tempo: <b>${String(u.segundos).replace(".", ",")} s</b></span>` +
+      (u.custo && Number(u.custo) > 0 ? `<span>Custo: <b>${esc(u.moeda || "")} ${Number(u.custo).toFixed(5)}</b></span>` : "") +
+      `<span>Artigos da base: <b>${u.artigos && u.artigos.length ? u.artigos.map(esc).join(", ") : "nenhum"}</b></span>` +
+      `<span>Origem: <b>${esc(u.origem || "")}</b></span>`;
+    document.getElementById("robo-provs").innerHTML = (s.provedores || []).map(p =>
+      `<div class="prov"><strong class="nome">${esc(p.nome)}</strong>` +
+      `<div class="estado"><span>Conta</span><span class="pill ${esc(p.conta.cls)}">${esc(p.conta.txt)}</span>` +
+      `<span>Limite</span><span class="pill ${esc(p.limite.cls)}">${esc(p.limite.txt)}${p.limite.volta_em ? " até " + quando(p.limite.volta_em) : ""}</span></div>` +
+      (p.usos.length ? `<ul>${p.usos.map(x => `<li><span>${esc(x.no)}</span><code>${esc(x.modelo)}</code></li>`).join("")}</ul>`
+                     : `<span class="fora">Conectado, mas não usado no robô publicado</span>`) + `</div>`).join("")
+      || `<p class="ajuda">Nenhuma conta de IA conectada no Dify.</p>`;
     document.getElementById("robo-itens").innerHTML = s.itens.map(i =>
       `<div class="item"><span>${esc(i.nome)}</span><span class="pill ${esc(i.cls)}">${esc(i.txt)}${i.volta_em ? " até " + quando(i.volta_em) : ""}</span></div>`).join("");
   } catch (e) {

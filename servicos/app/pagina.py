@@ -95,6 +95,8 @@ async def provedores_de_ia() -> dict:
             for p in r.json()["data"]:  # langgenius/groq/groq -> groq
                 id_ = p["provider"].split("/")[1]
                 provedores.setdefault(id_, {"nome": id_.capitalize(), "conta": False, "usos": []})
+                rotulo = p.get("label") or {}
+                provedores[id_]["nome"] = rotulo.get("pt_BR") or rotulo.get("en_US") or provedores[id_]["nome"]
                 provedores[id_]["conta"] = (p.get("custom_configuration") or {}).get("status") == "active"
             r = await h.get(f"{URL['dify']}/console/api/apps/{ler('dify.json').get('app_id')}/workflows/publish", headers=cab)
             r.raise_for_status()
@@ -154,9 +156,11 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
     def ativo(limite: dict) -> bool:
         return limite.get("volta_em") is None or limite["volta_em"] > agora
 
-    itens = []
+    itens, cartoes = [], []
     for id_, p in provedores.items():
         usado, ia = bool(p["usos"]), p["nome"]
+        if not usado and not p["conta"] and id_ not in limites:
+            continue  # conta não conectada e fora do robô: não interessa aqui
         recusada = usado and tipo == "conta" and erro.get("provedor") in (id_, None)
         if recusada:
             conta = ("bad", "chave recusada")
@@ -176,10 +180,9 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
             situacao = ("ok", "sem erro")
         else:
             situacao = ("warn", "sem dados") if usado else ("", "sem dados")
-        uso = ", ".join(f"{u['no']} ({u['modelo']})" for u in p["usos"]) or "não usado no robô publicado"
-        itens += [{"nome": f"Conta do {ia}", "cls": conta[0], "txt": conta[1]},
-                  {"nome": f"Limite do {ia}", "cls": situacao[0], "txt": situacao[1], "volta_em": volta},
-                  {"nome": f"Uso do {ia}", "cls": "", "txt": uso}]
+        cartoes.append({"nome": ia, "usos": p["usos"],
+                        "conta": {"cls": conta[0], "txt": conta[1]},
+                        "limite": {"cls": situacao[0], "txt": situacao[1], "volta_em": volta}})
     bloqueado = bool(bloqueio["em"] and bloqueio["em"] > (robo.get("recebida_em") or 0))
     if bloqueado:
         itens.append({"nome": "Chat chega ao robô", "cls": "bad", "txt": "bloqueado"})
@@ -250,7 +253,9 @@ def situacao_do_robo(robo: dict, provedores: dict, bloqueio: dict) -> dict:
     else:
         cls, titulo = "warn", "Ainda não sei se o robô está respondendo."
         acao = "Mande uma mensagem no chat ou clique em Testar agora."
-    return {"cls": cls, "titulo": titulo, "acao": acao, "volta_em": volta_em, "ok_em": robo.get("ok_em"), "itens": itens}
+    cartoes.sort(key=lambda c: not c["usos"])  # os que o robô usa primeiro
+    return {"cls": cls, "titulo": titulo, "acao": acao, "volta_em": volta_em, "ok_em": robo.get("ok_em"), "itens": itens,
+            "provedores": cartoes, "ultima": robo.get("ultima") if robo.get("ok_em") and tipo is None else None}
 
 
 @app.get("/api/robo")
