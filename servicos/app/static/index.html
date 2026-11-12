@@ -271,7 +271,7 @@ async function atualizarRobo() {
     const ul = document.getElementById("robo-ultima"); ul.hidden = !u;
     if (u) ul.innerHTML = `<span>Tokens: <b>${fmt(u.tokens)}</b> (${fmt(u.tokens_entrada)} enviados, ${fmt(u.tokens_saida)} recebidos)</span>` +
       `<span>Tempo: <b>${String(u.segundos).replace(".", ",")} s</b></span>` +
-      (u.custo && Number(u.custo) > 0 ? `<span>Custo: <b>${esc(u.moeda || "")} ${Number(u.custo).toFixed(5)}</b></span>` : "") +
+      (u.custo && Number(u.custo) > 0 ? `<span title="Estimativa do Dify com o preço de tabela de cada modelo. Em conta no plano gratuito, sem faturamento ativado, nada é cobrado.">Custo estimado: <b>${esc(u.moeda || "")} ${Number(u.custo).toFixed(5)}</b> (preço de tabela)</span>` : "") +
       `<span>Artigos da base: <b>${u.artigos && u.artigos.length ? u.artigos.map(esc).join(", ") : "nenhum"}</b></span>` +
       `<span>Origem: <b>${esc(u.origem || "")}</b></span>`;
     document.getElementById("robo-provs").innerHTML = (s.provedores || []).map(p =>
